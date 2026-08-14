@@ -12,13 +12,15 @@ use PHPUnit\Framework\TestCase;
  * been run against this test DB (boosterportal_qbo_client_id/secret/
  * refresh_token/realm_id all default to '').
  *
- * Mock-free per the plan's suggestion, and cheap despite constructing a real
- * QboClient: verified empirically (`cv api4 BoosterPortal.refreshMirror`
- * against the dev site with no credentials configured) that the Intuit SDK's
- * OAuth2LoginHelper::getAccessToken() rejects an access-token object with no
- * client id *before* issuing any HTTP request — "Can't get OAuth 2 Client ID
- * from Access Token Object. It is not set." — so this never touches the
- * network and completes in well under a second.
+ * RefreshMirror::_run() checks boosterportal_qbo_client_id/refresh_token
+ * directly via Civi::settings() before ever constructing a QboClient, so
+ * this is genuinely mock-free and cheap without relying on the Intuit SDK's
+ * own internal validation to fail fast — it never reaches QboClient/the SDK
+ * at all in this case, let alone the network. (A separate, unmocked concern
+ * — what happens when credentials ARE present but the SDK call itself fails
+ * — isn't covered here; that path rethrows as "QBO mirror refresh failed:
+ * ..." and would need a real or fake QBO connection to exercise, which
+ * RefreshMirror doesn't support injecting.)
  *
  * ->setCheckPermissions(FALSE): deliberate — this test exercises _run()'s
  * exception-wrapping, not the entity's permissions() gate, and headless

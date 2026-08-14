@@ -15,6 +15,10 @@ class Mirror {
     $now = date('Y-m-d H:i:s');
     $today = date('Y-m-d');
     $rows = [];
+    // Buffered fully in memory before any write: this project is a few
+    // hundred families' worth of QBO customers (§1), not a scale where that
+    // matters, and it's what guarantees the DELETE below never runs against
+    // a client that's about to fail partway through paging.
     foreach ($this->client->listAllCustomers() as $c) {
       $rows[] = $c;
     }

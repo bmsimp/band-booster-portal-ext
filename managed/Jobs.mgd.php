@@ -13,7 +13,7 @@ return [
         'api_entity' => 'BoosterPortal',
         'api_action' => 'refreshMirror',
         'is_active' => TRUE,
-        'description' => 'Pulls the QBO customer tree into boosterportal_qbo_customer. Reconciliation runs right after (§6).',
+        'description' => 'Pulls the QBO customer tree into boosterportal_qbo_customer. Reconciliation (Task 13) will run after this.',
       ],
       'match' => ['name'],
     ],

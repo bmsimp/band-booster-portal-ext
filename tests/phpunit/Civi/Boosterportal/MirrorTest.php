@@ -13,6 +13,28 @@ class MirrorTest extends TestCase implements HeadlessInterface, TransactionalInt
   }
 
   /**
+   * Belt, on top of TransactionalInterface's per-test rollback: start every
+   * test with the three boosterportal_* tables confirmed empty, so an
+   * assertion here is never accidentally satisfied by a row some earlier
+   * test (or a stale --reset seed) happened to leave behind.
+   *
+   * DELETE, not TRUNCATE: CiviTestListener::startTest() opens the wrapping
+   * CRM_Core_Transaction BEFORE this setUp() runs (it's a PHPUnit
+   * TestListener::startTest hook, which fires ahead of TestCase::setUp()),
+   * so this already executes inside that transaction. TRUNCATE is DDL and
+   * triggers MySQL's implicit COMMIT even mid-transaction, which would
+   * silently end the wrapping transaction early and defeat rollback
+   * isolation for the rest of the test. DELETE participates in the
+   * transaction normally and rolls back with everything else.
+   */
+  protected function setUp(): void {
+    parent::setUp();
+    \CRM_Core_DAO::executeQuery('DELETE FROM boosterportal_qbo_customer');
+    \CRM_Core_DAO::executeQuery('DELETE FROM boosterportal_qbo_balance_history');
+    \CRM_Core_DAO::executeQuery('DELETE FROM boosterportal_login_token');
+  }
+
+  /**
    * @param float $customer102Balance lets tests vary a re-run's data (e.g.
    *   to prove an upsert takes the LATEST value, not just that row-count
    *   stayed the same) without duplicating the whole fixture.
@@ -73,6 +95,48 @@ class MirrorTest extends TestCase implements HeadlessInterface, TransactionalInt
       [1 => ['102', 'String']]
     );
     $this->assertSame(700.0, $historyBalance);
+  }
+
+  /**
+   * BalanceWithJobs ABSENT (not just NULL) is the real-world shape:
+   * QboClient::normalizeCustomer() only sets the 'BalanceWithJobs' key when
+   * the QBO API response actually included it (array_key_exists check), so
+   * a customer with no jobs balance arrives here with the key missing
+   * entirely, not present-and-null. Mirror::insertCustomer()'s docblock
+   * exists specifically to explain why this can't be handled by binding ''
+   * as a Float placeholder; this test is the coverage that path never had.
+   */
+  public function testRefreshStoresNullBalanceWithJobsWhenAbsent(): void {
+    $client = new class implements QboClientInterface {
+
+      public function getCustomer(string $qboId): ?array {
+        return NULL;
+      }
+
+      public function listAllCustomers(): \Generator {
+        yield ['Id' => '301', 'DisplayName' => 'No Jobs Balance', 'Active' => TRUE,
+          'Balance' => 50.0, 'ParentRef' => NULL, 'PrimaryEmailAddr' => NULL];
+      }
+
+      public function getOpenInvoices(array $qboCustomerIds): array {
+        return [];
+      }
+
+    };
+
+    (new Mirror($client))->refresh();
+
+    $mirrorIsNull = (bool) \CRM_Core_DAO::singleValueQuery(
+      'SELECT balance_with_jobs IS NULL FROM boosterportal_qbo_customer WHERE qbo_id = %1',
+      [1 => ['301', 'String']]
+    );
+    $this->assertTrue($mirrorIsNull, 'balance_with_jobs should be SQL NULL, not 0 or \'\', when BalanceWithJobs is absent');
+
+    $historyIsNull = (bool) \CRM_Core_DAO::singleValueQuery(
+      'SELECT balance_with_jobs IS NULL FROM boosterportal_qbo_balance_history WHERE qbo_id = %1',
+      [1 => ['301', 'String']]
+    );
+    $this->assertTrue($historyIsNull, 'history.balance_with_jobs should also be SQL NULL when absent');
   }
 
   public function testRefreshNeverTouchesContacts(): void {
