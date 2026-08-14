@@ -1,5 +1,16 @@
+-- IF NOT EXISTS on all three tables below: scripts/setup-test-db.sh reseeds
+-- the headless test DB from a mysqldump of the LIVE 'db' database (see its
+-- own header comment), which — now that these tables exist there too —
+-- means a "fresh" Civi\Test install already finds them present before
+-- install() ever runs. Without IF NOT EXISTS, a plain CREATE TABLE hard-
+-- fails ("already exists") on every `--reset`, regardless of whether the
+-- seeded copy's schema is current. This is safe: the live db's schema is
+-- kept current via CRM_Boosterportal_Upgrader's numbered upgrade_NNNN()
+-- steps (see upgrade_1001()), so whatever the seed carries is always the
+-- up-to-date shape by the time a fresh install would try to (re)create it.
+--
 -- Mirror of the QBO customer tree (§5.4). Snapshot only; no FK to civicrm_*.
-CREATE TABLE boosterportal_qbo_customer (
+CREATE TABLE IF NOT EXISTS boosterportal_qbo_customer (
   qbo_id VARCHAR(32) NOT NULL PRIMARY KEY,
   display_name VARCHAR(255) NOT NULL,
   active TINYINT(1) NOT NULL DEFAULT 1,
@@ -11,28 +22,26 @@ CREATE TABLE boosterportal_qbo_customer (
   INDEX idx_parent_ref (parent_ref)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Nightly balance history: what makes drift diffable (§5.4).
---
--- Deliberately NOT deduped by (qbo_id, synced_on) via a UNIQUE key +
--- ON DUPLICATE KEY UPDATE, as first sketched in the Task 10 plan doc: doing
--- so collapses same-day re-runs into an UPDATE instead of a new row, which
--- contradicts Mirror.php's contract (and MirrorTest::testRefreshPopulatesMirrorAndHistory)
--- that every refresh() call appends a history row, never collapses one. In
--- production the nightly job runs once/day, so this still yields exactly one
--- row/day/customer in the common case; a manual same-day re-run just leaves
--- extra rows for that day, which reconciliation (Task 13) can collapse by
--- picking MAX(id) per (qbo_id, synced_on) if that ever matters.
-CREATE TABLE boosterportal_qbo_balance_history (
+-- Nightly balance history: a PER-DAY snapshot, what makes drift diffable
+-- (§5.4 design intent, confirmed by spec review). UNIQUE KEY uq_day means a
+-- same-day re-run upserts that day's row (ON DUPLICATE KEY UPDATE in
+-- Mirror::insertHistory() — latest refresh wins) rather than appending a
+-- second row for the same customer/day. An earlier revision of this file
+-- dropped this constraint to satisfy what turned out to be a self-
+-- contradictory test assertion; the design's per-day-snapshot intent is
+-- authoritative, so it's restored here. See CRM_Boosterportal_Upgrader::
+-- upgrade_1001() for how the already-installed live site picks this up.
+CREATE TABLE IF NOT EXISTS boosterportal_qbo_balance_history (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   qbo_id VARCHAR(32) NOT NULL,
   balance DECIMAL(12,2) NOT NULL,
   balance_with_jobs DECIMAL(12,2) NULL,
   synced_on DATE NOT NULL,
-  INDEX idx_qbo_id_day (qbo_id, synced_on)
+  UNIQUE KEY uq_day (qbo_id, synced_on)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Magic-link tokens (used from Task 15; created here so schema lives in one place).
-CREATE TABLE boosterportal_login_token (
+CREATE TABLE IF NOT EXISTS boosterportal_login_token (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   contact_id INT UNSIGNED NOT NULL,
   email VARCHAR(255) NOT NULL,

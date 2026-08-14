@@ -50,4 +50,49 @@ final class CRM_Boosterportal_Upgrader extends \CRM_Extension_Upgrader_Base {
     $this->executeSqlFile('sql/uninstall.sql');
   }
 
+  /**
+   * Fixes up boosterportal_qbo_balance_history on a site that was already
+   * installed before the per-day-snapshot design (§5.4) was restored: adds
+   * UNIQUE KEY uq_day (qbo_id, synced_on), which sql/install.sql now
+   * declares on a fresh install. A fresh install never runs this step —
+   * onPostInstall() sets the current revision straight to max(getRevisions())
+   * (1001, today), so it only ever applies to a site (the live dev site)
+   * that was already installed under the earlier revision of
+   * sql/install.sql, which shipped without the constraint.
+   *
+   * Idempotent (checks information_schema first) and guards against a
+   * pre-existing duplicate (qbo_id, synced_on) pair before adding the key —
+   * ALTER TABLE ... ADD UNIQUE KEY fails outright if any duplicate already
+   * exists. Keeps the highest id per (qbo_id, synced_on) — the most
+   * recently inserted row — and deletes the rest, consistent with
+   * insertHistory()'s own "latest wins" semantics once the constraint is
+   * live.
+   *
+   * @return TRUE on success
+   * @throws CRM_Core_Exception
+   */
+  public function upgrade_1001(): bool {
+    $this->ctx->log->info('Applying update 1001: uq_day on boosterportal_qbo_balance_history');
+
+    $exists = (bool) CRM_Core_DAO::singleValueQuery(
+      "SELECT COUNT(*) FROM information_schema.statistics
+       WHERE table_schema = DATABASE()
+         AND table_name = 'boosterportal_qbo_balance_history'
+         AND index_name = 'uq_day'"
+    );
+    if ($exists) {
+      return TRUE;
+    }
+
+    CRM_Core_DAO::executeQuery(
+      'DELETE h1 FROM boosterportal_qbo_balance_history h1
+       INNER JOIN boosterportal_qbo_balance_history h2
+         ON h1.qbo_id = h2.qbo_id AND h1.synced_on = h2.synced_on AND h1.id < h2.id'
+    );
+    CRM_Core_DAO::executeQuery(
+      'ALTER TABLE boosterportal_qbo_balance_history ADD UNIQUE KEY uq_day (qbo_id, synced_on)'
+    );
+    return TRUE;
+  }
+
 }

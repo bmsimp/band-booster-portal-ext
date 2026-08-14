@@ -71,9 +71,12 @@ class Mirror {
   }
 
   /**
-   * Plain INSERT, not upsert: see the comment on boosterportal_qbo_balance_history
-   * in sql/install.sql for why this table is intentionally not deduped by
-   * (qbo_id, synced_on) — every refresh() call appends, even same-day re-runs.
+   * Upsert, keyed on boosterportal_qbo_balance_history's UNIQUE KEY uq_day
+   * (qbo_id, synced_on): history is a PER-DAY snapshot (§5.4 design intent).
+   * A same-day re-run (manual re-trigger, or the nightly job running twice)
+   * updates that day's row to the latest values rather than appending a
+   * second row — "latest wins" for the day, which is what makes the table
+   * diffable day-over-day without also needing to dedupe within a day.
    * Same balance_with_jobs NULL handling as insertCustomer() above, and for
    * the same reason.
    */
@@ -82,7 +85,8 @@ class Mirror {
     $balanceWithJobsSql = $balanceWithJobs !== NULL ? '%3' : 'NULL';
     \CRM_Core_DAO::executeQuery(
       "INSERT INTO boosterportal_qbo_balance_history (qbo_id, balance, balance_with_jobs, synced_on)
-       VALUES (%1, %2, {$balanceWithJobsSql}, %4)",
+       VALUES (%1, %2, {$balanceWithJobsSql}, %4)
+       ON DUPLICATE KEY UPDATE balance = VALUES(balance), balance_with_jobs = VALUES(balance_with_jobs)",
       [
         1 => [$c['Id'], 'String'],
         2 => [$c['Balance'], 'Float'],
