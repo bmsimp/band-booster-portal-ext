@@ -5,13 +5,15 @@ use Civi\Api4\Contact;
 
 /**
  * Derives the LOGGED-IN parent's own family — their students, then the
- * billing household those students belong to — for GetMyBalance (Task 12,
- * §4.6). No method here ever accepts a caller-supplied contact/household id
- * from outside this extension's own already-ACL-verified output: studentsOf()
- * takes a contact id but immediately asserts it IS the session contact, and
- * billingHouseholdOf() only ever receives ids that studentsOf() itself
- * already verified. This is what keeps GetMyBalance's "no request parameter
- * ever selects whose family to look up" guarantee true one level down.
+ * billing household(s) those students belong to, then (for the §4.6
+ * complete-set gate) each household's true complete active student count —
+ * for GetMyBalance (Task 12, §4.6). No method here ever accepts a
+ * caller-supplied contact/household id from outside this extension's own
+ * already-ACL-verified output: studentsOf() takes a contact id but
+ * immediately asserts it IS the session contact, and billingHouseholdsOf()
+ * only ever receives students that studentsOf() itself already verified.
+ * This is what keeps GetMyBalance's "no request parameter ever selects
+ * whose family to look up" guarantee true one level down.
  *
  * --- Why this isn't the plan's literal join, and what happens if you try it ---
  *
@@ -60,9 +62,28 @@ use Civi\Api4\Contact;
  *     to one without the other), the result is a silent SUBSET, never a
  *     superset — this fails closed, not open.
  *
- * billingHouseholdOf() is the one sanctioned exception to invariant 2
- * (checkPermissions FALSE) in this extension's parent-reachable code —
- * documented in full on that method and in InvariantTest's allowlist.
+ * --- checkPermissions FALSE calls in this file, and their blast radius ---
+ *
+ * billingHouseholdsOf() and activeStudentCountOf() are the sanctioned
+ * exceptions to invariant 2 (checkPermissions FALSE) in this extension's
+ * parent-reachable code — see InvariantTest's allowlist entry on
+ * FamilyResolver.php for the full containment argument. Post-Task-12
+ * adversarial security review (C1/C2): the INPUT containment argument above
+ * (studentsOf() is ACL-verified; billingHouseholdsOf() is keyed only off
+ * that verified output) was correct but incomplete on its own — it bounded
+ * WHICH students/households could be looked up, not what a caller was
+ * allowed to DO with the resulting household-level figures once looked up.
+ * BalanceService's complete-set gate (familyBalance()'s $completeHousehold
+ * parameter) is what closes that: a household's aggregate (BalanceWithJobs)
+ * is only ever readable when activeStudentCountOf() for that household
+ * equals the verified count billingHouseholdsOf() produced for it — i.e.
+ * the OUTPUT of this file is only used at household-aggregate granularity
+ * when the caller could see every student that aggregate covers. See
+ * AclLeakTest::testBillingHouseholdsOfDetectsIncompleteHouseholdWhenSiblingUnedged(),
+ * ::testBillingHouseholdsOfResolvesSplitFamilyToStudentsOwnHousehold(), and
+ * ::testBillingHouseholdsOfMarksTwoSeparateCompleteHouseholdsComplete() for
+ * the fixtures that keep both halves (this file's grouping/counting, and
+ * BalanceService's gate) honest together.
  */
 class FamilyResolver {
 
@@ -147,34 +168,42 @@ class FamilyResolver {
   }
 
   /**
-   * The billing Household (§4.4 — the QBO billing anchor; no ACL role of
-   * its own) that the given, already ACL-verified student ids belong to.
+   * Groups the given ACL-verified students by billing Household (§4.4 — the
+   * QBO billing anchor; no ACL role of its own). A parent CAN legitimately
+   * have verified students spread across more than one household (I2) — the
+   * grouping is entirely driven by each STUDENT's own "Household Member of"
+   * membership, never by the parent's, which is what correctly separates a
+   * split-family student (living in a different household than the parent)
+   * from the parent's own home household.
    *
    * checkPermissions FALSE (Task 7 amendment, restated): parents cannot see
    * Household rows at all — the aclGroup grant in boosterportal.php covers
    * only the Booster_QBO_Student custom group, and the aclWhereClause hook
    * only ever grants contact_id_b of a Portal_Parent_of edge, which is
-   * never a Household. This is the sanctioned, documented exception to
-   * invariant 2 for this file (see InvariantTest's allowlist entry on
-   * FamilyResolver.php for the containment argument). Its safety rests
-   * entirely on $studentIds having ALREADY been through studentsOf()'s
-   * ACL-checked verification before reaching here — this method itself
-   * performs no permission check and MUST NOT be called with ids sourced
-   * from request input.
+   * never a Household. See InvariantTest's allowlist entry on
+   * FamilyResolver.php, and the class-level doc above, for the full
+   * containment argument (input scoping AND the BalanceService-side
+   * complete-set gate that bounds what the output may be used for).
    *
-   * @param int[] $studentIds
-   *   ACL-verified student contact ids (i.e. the 'id' values returned by
-   *   studentsOf() for the same contact) — never take this from request
-   *   input.
-   * @return array{id: int, qbo_customer_id: string}|null
-   *   NULL if $studentIds is empty or no such household exists.
+   * @param array<array{id: int, display_name: string, qbo_subcustomer_id: string}> $students
+   *   Must be studentsOf()'s own return for the same contact — never
+   *   caller-supplied ids.
+   * @return array<int, array{id: int, qbo_customer_id: string, students: array}>
+   *   Keyed by household id, ordered by household id ascending
+   *   (deterministic). Each entry's 'students' is the subset of $students
+   *   verified as belonging to that household, ordered by student id.
    */
-  public static function billingHouseholdOf(array $studentIds): ?array {
-    if (!$studentIds) {
-      return NULL;
+  public static function billingHouseholdsOf(array $students): array {
+    if (!$students) {
+      return [];
+    }
+    $studentIds = array_column($students, 'id');
+    $studentsById = [];
+    foreach ($students as $s) {
+      $studentsById[$s['id']] = $s;
     }
 
-    $household = Contact::get(FALSE)
+    $rows = Contact::get(FALSE)
       ->addWhere('contact_type', '=', 'Household')
       ->addWhere('Booster_QBO.qbo_customer_id', 'IS NOT NULL')
       ->addJoin('Relationship AS member', 'INNER', NULL,
@@ -186,16 +215,69 @@ class FamilyResolver {
         // "Household Member of".
         ['member.relationship_type_id:name', '=', '"Household Member of"'],
         ['member.is_active', '=', TRUE])
-      ->addSelect('id', 'Booster_QBO.qbo_customer_id')
-      ->execute()->first();
+      ->addSelect('id', 'Booster_QBO.qbo_customer_id', 'member.contact_id_a')
+      ->addOrderBy('id', 'ASC')
+      ->execute();
 
-    if (!$household) {
-      return NULL;
+    $households = [];
+    foreach ($rows as $row) {
+      $hhId = (int) $row['id'];
+      $studentId = (int) $row['member.contact_id_a'];
+      if (!isset($studentsById[$studentId])) {
+        // Defensive: a join row for a student id we didn't ask about.
+        // Should not happen (the join is scoped to $studentIds), but never
+        // silently include a student this method wasn't told about.
+        continue;
+      }
+      if (!isset($households[$hhId])) {
+        $households[$hhId] = [
+          'id' => $hhId,
+          'qbo_customer_id' => $row['Booster_QBO.qbo_customer_id'],
+          'students' => [],
+        ];
+      }
+      $households[$hhId]['students'][$studentId] = $studentsById[$studentId];
     }
-    return [
-      'id' => (int) $household['id'],
-      'qbo_customer_id' => $household['Booster_QBO.qbo_customer_id'],
-    ];
+
+    ksort($households);
+    foreach ($households as &$hh) {
+      ksort($hh['students']);
+      $hh['students'] = array_values($hh['students']);
+    }
+    unset($hh);
+    return $households;
+  }
+
+  /**
+   * The household's COMPLETE active student count — every Individual with a
+   * Booster_QBO_Student.qbo_subcustomer_id who is an active "Household
+   * Member of" that household — NOT scoped to what any particular parent
+   * may see. This is the other half of the §4.6 complete-set gate (C1/C2):
+   * BalanceService only cross-checks a household's BalanceWithJobs when a
+   * caller's verified student count for that household equals this number.
+   *
+   * checkPermissions FALSE, COUNT-ONLY (->execute()->count()): this call
+   * never materializes a single contact id, name, or qbo id — only an
+   * integer — which is deliberate containment (see InvariantTest's
+   * allowlist entry): even if $householdId were ever wrong, the worst this
+   * method can leak is a COUNT, never which students, who they are, or
+   * anything about family identity.
+   *
+   * @param int $householdId
+   *   A household id already produced by billingHouseholdsOf() for the same
+   *   contact — never take this from request input.
+   */
+  public static function activeStudentCountOf(int $householdId): int {
+    return Contact::get(FALSE)
+      ->addWhere('contact_type', '=', 'Individual')
+      ->addWhere('Booster_QBO_Student.qbo_subcustomer_id', 'IS NOT NULL')
+      ->addJoin('Relationship AS member', 'INNER', NULL,
+        ['member.contact_id_a', '=', 'id'],
+        ['member.contact_id_b', '=', $householdId],
+        ['member.relationship_type_id:name', '=', '"Household Member of"'],
+        ['member.is_active', '=', TRUE])
+      ->selectRowCount()
+      ->execute()->count();
   }
 
 }

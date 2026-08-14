@@ -63,10 +63,14 @@ class AclLeakTest extends TestCase implements HeadlessInterface, TransactionalIn
   private function createLoggedInUserFor(int $contactId): void {
     $session = \CRM_Core_Session::singleton();
     $session->set('userID', $contactId);
+    // uf_id derived from $contactId (not a fixed 99001): several tests below
+    // log in as more than one contact in turn (multi-household fixtures),
+    // and civicrm_uf_match.uf_id is unique — a fixed value would collide on
+    // the second call.
     \Civi\Api4\UFMatch::create(FALSE)
-      ->addValue('uf_id', 99001)
+      ->addValue('uf_id', 90000 + $contactId)
       ->addValue('contact_id', $contactId)
-      ->addValue('uf_name', 'ana@example.org')
+      ->addValue('uf_name', "acltest-{$contactId}@example.org")
       ->execute();
   }
 
@@ -202,20 +206,164 @@ class AclLeakTest extends TestCase implements HeadlessInterface, TransactionalIn
   }
 
   /**
-   * The billing household lookup (FamilyResolver::billingHouseholdOf()) runs
-   * with checkPermissions FALSE — parents cannot see Household rows at all
-   * (Task 7 amendment) — so it is keyed ONLY off ACL-verified student ids
-   * from testGetMyBalanceSeesOnlyOwnStudents() above, never off request
+   * The billing household lookup (FamilyResolver::billingHouseholdsOf())
+   * runs with checkPermissions FALSE — parents cannot see Household rows at
+   * all (Task 7 amendment) — so it is keyed ONLY off ACL-verified student
+   * ids from testGetMyBalanceSeesOnlyOwnStudents() above, never off request
    * input. Confirm it lands on family A's household and never family B's.
    */
   public function testGetMyBalanceHouseholdLookupScopedToOwnStudents(): void {
     $students = FamilyResolver::studentsOf($this->famA['parent_ids'][0]);
-    $studentIds = array_column($students, 'id');
-    $household = FamilyResolver::billingHouseholdOf($studentIds);
-    $this->assertNotNull($household, 'Family A billing household must be found');
+    $households = FamilyResolver::billingHouseholdsOf($students);
+    $this->assertCount(1, $households, 'Family A has exactly one billing household');
+    $household = array_values($households)[0];
     $this->assertSame('201', $household['qbo_customer_id']);
     $this->assertNotSame($this->famBQboCustomerId, $household['qbo_customer_id'],
       'Household lookup scoped to family A students must never resolve to family B\'s household');
+  }
+
+  /**
+   * C1/C2 input (adversarial security review, post-Task-12): the §4.6
+   * cross-check is only valid when the parent's verified student set for a
+   * household equals that household's COMPLETE active student set.
+   * FamilyResolver::activeStudentCountOf() is the "complete" half of that
+   * comparison — a checkPermissions FALSE, COUNT-ONLY query (no contact
+   * data returned, only an integer — see InvariantTest's allowlist for the
+   * containment argument). Fixture: one household, two students, this
+   * parent's Portal_Parent_of edge only to one of them (the other's edge is
+   * neutralized post-creation, modeling a revoked/never-granted edge).
+   * Assert: verified (studentsOf) sees only the edged student, but
+   * activeStudentCountOf() correctly reports BOTH — i.e. the gate's inputs
+   * correctly disagree, which is what makes BalanceService treat this
+   * household as incomplete.
+   */
+  public function testBillingHouseholdsOfDetectsIncompleteHouseholdWhenSiblingUnedged(): void {
+    $fam = FamilyBuilder::create([
+      'household' => ['name' => 'Sibling Family', 'qbo_customer_id' => '401'],
+      'parents' => [['first_name' => 'Sib', 'last_name' => 'Parent', 'email' => 'sib@example.org']],
+      'students' => [
+        ['first_name' => 'Edged', 'last_name' => 'Sib', 'qbo_subcustomer_id' => '402'],
+        ['first_name' => 'Unedged', 'last_name' => 'Sib', 'qbo_subcustomer_id' => '403'],
+      ],
+    ]);
+    // Neutralize the second student's edge — models a revoked/never-granted
+    // Portal_Parent_of permission, which is exactly the scenario the
+    // complete-set gate exists for.
+    \Civi\Api4\Relationship::update(FALSE)
+      ->addWhere('contact_id_a', '=', $fam['parent_ids'][0])
+      ->addWhere('contact_id_b', '=', $fam['student_ids'][1])
+      ->addValue('is_permission_a_b', \CRM_Contact_BAO_Relationship::NONE)
+      ->execute();
+
+    $this->createLoggedInUserFor($fam['parent_ids'][0]);
+    \CRM_Core_Config::singleton()->userPermissionClass->permissions = ['access CiviCRM'];
+
+    $students = FamilyResolver::studentsOf($fam['parent_ids'][0]);
+    $this->assertSame(['402'], array_column($students, 'qbo_subcustomer_id'),
+      'Only the still-edged student should be verified');
+
+    $households = FamilyResolver::billingHouseholdsOf($students);
+    $this->assertCount(1, $households);
+    $household = array_values($households)[0];
+    $this->assertSame('401', $household['qbo_customer_id']);
+    $this->assertCount(1, $household['students'], 'Only the verified student should appear in the grouping');
+
+    $completeCount = FamilyResolver::activeStudentCountOf($household['id']);
+    $this->assertSame(2, $completeCount,
+      'The household actually has 2 active students — verified (1) != complete (2) is what marks this household incomplete');
+  }
+
+  /**
+   * I2/§4.4 split-family shape: the parent's OWN household is H2 (Step
+   * Parent's home) but their permissioned edge reaches a student who is a
+   * member of a DIFFERENT household, H1 — which also has a second, un-edged
+   * student. Billing-household resolution must follow the STUDENT's own
+   * household membership, never the parent's, and must still detect H1 as
+   * incomplete (the un-edged sibling).
+   */
+  public function testBillingHouseholdsOfResolvesSplitFamilyToStudentsOwnHousehold(): void {
+    $h1 = FamilyBuilder::create([
+      'household' => ['name' => 'H1 Family', 'qbo_customer_id' => '501'],
+      'parents' => [],
+      'students' => [
+        ['first_name' => 'Reachable', 'last_name' => 'H1', 'qbo_subcustomer_id' => '502'],
+        ['first_name' => 'Unreachable', 'last_name' => 'H1', 'qbo_subcustomer_id' => '503'],
+      ],
+    ]);
+    $h2 = FamilyBuilder::create([
+      'household' => ['name' => 'H2 Family', 'qbo_customer_id' => '511'],
+      'parents' => [['first_name' => 'Step', 'last_name' => 'Parent', 'email' => 'step@example.org']],
+      'students' => [],
+    ]);
+    $stepParentId = $h2['parent_ids'][0];
+    \Civi\Api4\Relationship::create(FALSE)
+      ->addValue('contact_id_a', $stepParentId)
+      ->addValue('contact_id_b', $h1['student_ids'][0])
+      ->addValue('relationship_type_id:name', 'Portal_Parent_of')
+      ->addValue('is_permission_a_b', \CRM_Contact_BAO_Relationship::VIEW)
+      ->addValue('is_permission_b_a', \CRM_Contact_BAO_Relationship::NONE)
+      ->execute();
+
+    $this->createLoggedInUserFor($stepParentId);
+    \CRM_Core_Config::singleton()->userPermissionClass->permissions = ['access CiviCRM'];
+
+    $students = FamilyResolver::studentsOf($stepParentId);
+    $this->assertSame(['502'], array_column($students, 'qbo_subcustomer_id'));
+
+    $households = FamilyResolver::billingHouseholdsOf($students);
+    $this->assertCount(1, $households);
+    $household = array_values($households)[0];
+    $this->assertSame('501', $household['qbo_customer_id'], 'Must resolve to H1 (the student\'s household), never H2 (the parent\'s own)');
+    $this->assertNotSame('511', $household['qbo_customer_id']);
+
+    $this->assertSame(2, FamilyResolver::activeStudentCountOf($household['id']),
+      'H1 has 2 active students; only 1 is verified — incomplete');
+  }
+
+  /**
+   * I2 legitimate case: a parent verified for students in TWO different,
+   * each fully-visible, billing households (no split, no revoked edge —
+   * just two complete families). Both must resolve as separate complete
+   * households, so BalanceService never applies a permanent "partial view"
+   * flag to a parent who can rightfully see everything.
+   */
+  public function testBillingHouseholdsOfMarksTwoSeparateCompleteHouseholdsComplete(): void {
+    $fam1 = FamilyBuilder::create([
+      'household' => ['name' => 'Multi H1', 'qbo_customer_id' => '801'],
+      'parents' => [['first_name' => 'Multi', 'last_name' => 'Parent', 'email' => 'multi@example.org']],
+      'students' => [['first_name' => 'KidOne', 'last_name' => 'H1', 'qbo_subcustomer_id' => '802']],
+    ]);
+    $fam2 = FamilyBuilder::create([
+      'household' => ['name' => 'Multi H2', 'qbo_customer_id' => '901'],
+      'parents' => [],
+      'students' => [['first_name' => 'KidTwo', 'last_name' => 'H2', 'qbo_subcustomer_id' => '902']],
+    ]);
+    $parentId = $fam1['parent_ids'][0];
+    \Civi\Api4\Relationship::create(FALSE)
+      ->addValue('contact_id_a', $parentId)
+      ->addValue('contact_id_b', $fam2['student_ids'][0])
+      ->addValue('relationship_type_id:name', 'Portal_Parent_of')
+      ->addValue('is_permission_a_b', \CRM_Contact_BAO_Relationship::VIEW)
+      ->addValue('is_permission_b_a', \CRM_Contact_BAO_Relationship::NONE)
+      ->execute();
+
+    $this->createLoggedInUserFor($parentId);
+    \CRM_Core_Config::singleton()->userPermissionClass->permissions = ['access CiviCRM'];
+
+    $students = FamilyResolver::studentsOf($parentId);
+    $this->assertSame(['802', '902'], array_column($students, 'qbo_subcustomer_id'));
+
+    $households = FamilyResolver::billingHouseholdsOf($students);
+    $this->assertCount(2, $households, 'Two distinct billing households expected');
+    foreach ($households as $household) {
+      $verifiedCount = count($household['students']);
+      $completeCount = FamilyResolver::activeStudentCountOf($household['id']);
+      $this->assertSame($completeCount, $verifiedCount,
+        "Household {$household['qbo_customer_id']} should be complete (verified == complete)");
+    }
+    $qboIds = array_column($households, 'qbo_customer_id');
+    sort($qboIds);
+    $this->assertSame(['801', '901'], $qboIds);
   }
 
 }

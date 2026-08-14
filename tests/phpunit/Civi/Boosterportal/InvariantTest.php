@@ -63,22 +63,27 @@ class InvariantTest extends TestCase implements HeadlessInterface {
       // any logged-in parent can trigger this code path. The containment
       // argument this allowlist entry rests on:
       //
-      //  1. The ONE checkPermissions FALSE call in this file is
-      //     FamilyResolver::billingHouseholdOf() — a Contact::get(FALSE)
-      //     reading Households. This is intentional and matches the Task 7
-      //     amendment: parents cannot see Household rows at all under this
-      //     extension's ACL model (boosterportal.php's aclGroup hook grants
-      //     only the Booster_QBO_Student custom group; the aclWhereClause
-      //     hook only ever grants contact_id_b of a Portal_Parent_of edge,
-      //     which is never a Household) — so there is no ACL-checked way to
-      //     do this lookup at all, by design, not by oversight.
-      //  2. billingHouseholdOf()'s ONLY input is $studentIds, an int[]. It
-      //     is NEVER called with anything from request/API input — the sole
-      //     caller (GetMyBalance::_run()) always sources $studentIds from
-      //     FamilyResolver::studentsOf()'s OWN return value for the SAME
-      //     request, and studentsOf() itself IS ACL-checked (see below), so
-      //     by construction the household lookup can only ever be scoped to
-      //     ids the parent was already independently verified to see.
+      //  1. There are TWO checkPermissions FALSE calls in this file:
+      //     FamilyResolver::billingHouseholdsOf() (a Contact::get(FALSE)
+      //     reading Households, grouped by household) and
+      //     FamilyResolver::activeStudentCountOf() (a Contact::get(FALSE),
+      //     COUNT-ONLY — ->execute()->count() never materializes a single
+      //     contact id/name/qbo id, only an integer). Both are intentional
+      //     and match the Task 7 amendment: parents cannot see Household
+      //     rows at all under this extension's ACL model (boosterportal.php's
+      //     aclGroup hook grants only the Booster_QBO_Student custom group;
+      //     the aclWhereClause hook only ever grants contact_id_b of a
+      //     Portal_Parent_of edge, which is never a Household) — so there is
+      //     no ACL-checked way to do either lookup at all, by design, not by
+      //     oversight.
+      //  2. billingHouseholdsOf()'s ONLY input is $students, the exact
+      //     return of studentsOf() for the SAME request — never anything
+      //     from request/API input, and studentsOf() itself IS ACL-checked
+      //     (see below), so by construction the household lookup can only
+      //     ever be scoped to students the parent was already independently
+      //     verified to see. activeStudentCountOf()'s only input is a
+      //     household id already produced BY billingHouseholdsOf() for that
+      //     same verified student set.
       //  3. studentsOf() is the OTHER method in this file, and it does NOT
       //     appear in the offender list above — it contains no
       //     checkPermissions=FALSE at all. It derives CANDIDATE student ids
@@ -98,7 +103,29 @@ class InvariantTest extends TestCase implements HeadlessInterface {
       //     and ::testGetMyBalanceHouseholdLookupScopedToOwnStudents(),
       //     which run both methods against a real two-family fixture and
       //     assert family A's derivation never contains anything of family
-      //     B — including through the FALSE call this entry allowlists.
+      //     B — including through the FALSE calls this entry allowlists.
+      //  5. Post-Task-12 adversarial security review (C1/C2): points 1-4
+      //     above bound WHICH students/households this file can look up —
+      //     they do NOT by themselves bound what a caller may DO with a
+      //     household's AGGREGATE figures once looked up. That second half
+      //     is enforced one layer up, in BalanceService: a household's
+      //     BalanceWithJobs is only ever read/compared
+      //     (familyBalance($id, $ids, $completeHousehold)) when
+      //     activeStudentCountOf() for that household equals the verified
+      //     count billingHouseholdsOf() produced for it — i.e. this file's
+      //     OUTPUT is only used at household-aggregate granularity when the
+      //     caller could see every student that aggregate covers. Guarded by
+      //     AclLeakTest::testBillingHouseholdsOfDetectsIncompleteHouseholdWhenSiblingUnedged()
+      //     (a sibling with a revoked/neutralized edge — activeStudentCountOf()
+      //     must still report the true, larger count),
+      //     ::testBillingHouseholdsOfResolvesSplitFamilyToStudentsOwnHousehold()
+      //     (household resolution follows the STUDENT's membership, never
+      //     the parent's own), and
+      //     ::testBillingHouseholdsOfMarksTwoSeparateCompleteHouseholdsComplete()
+      //     (a legitimate multi-household parent must NOT be penalized —
+      //     both households independently verify as complete), plus
+      //     BalanceServiceTest's incomplete-household tests for the gate
+      //     itself.
       'Civi/Boosterportal/FamilyResolver.php',
     ];
     // __DIR__ is .../boosterportal/tests/phpunit/Civi/Boosterportal — 4 levels

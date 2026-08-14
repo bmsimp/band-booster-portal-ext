@@ -99,4 +99,62 @@ class GetMyBalanceTest extends TestCase implements HeadlessInterface, Transactio
       ->execute();
   }
 
+  /**
+   * I4 fixture 4 (post-Task-12 adversarial review) + M1: the cache key is
+   * "boosterportal_balance_{$cid}" — per-contact by construction — but
+   * nothing previously proved (a) that GetMyBalance itself actually WRITES
+   * a cache entry for the empty state (M1; previously only non-empty
+   * payloads were cached), or (b) that two different contacts' entries are
+   * genuinely independent rather than colliding on a shared/derived key.
+   */
+  public function testCacheIsIsolatedPerContactIncludingTheEmptyState(): void {
+    $lonelyA = \Civi\Api4\Contact::create(FALSE)
+      ->addValue('contact_type', 'Individual')
+      ->addValue('first_name', 'Lonely')
+      ->addValue('last_name', 'A')
+      ->execute()->first()['id'];
+    $lonelyB = \Civi\Api4\Contact::create(FALSE)
+      ->addValue('contact_type', 'Individual')
+      ->addValue('first_name', 'Lonely')
+      ->addValue('last_name', 'B')
+      ->execute()->first()['id'];
+    $cacheKeyA = "boosterportal_balance_{$lonelyA}";
+    $cacheKeyB = "boosterportal_balance_{$lonelyB}";
+
+    $this->logInAs($lonelyA);
+    $resultA = (new GetMyBalance('BoosterPortal', 'getMyBalance'))
+      ->setCheckPermissions(FALSE)
+      ->execute()->first();
+    $this->assertTrue($resultA['empty']);
+
+    // M1: assert the WRITE happened, not merely that a later read returns
+    // something — the cache-read branch at the top of _run() already
+    // existed pre-fix, so a test that only plants a value and reads it back
+    // would pass regardless of whether GetMyBalance itself ever caches the
+    // empty state.
+    $cachedA = \Civi::cache('short')->get($cacheKeyA);
+    $this->assertNotNull($cachedA, 'M1: the empty state must be cached by GetMyBalance itself, not only non-empty payloads');
+    $this->assertTrue($cachedA['empty']);
+
+    // Isolation: plant a distinguishable sentinel directly under A's key,
+    // then confirm contact B's own independent call is completely
+    // unaffected by it — both in the returned payload and in B's own
+    // separately-written cache entry.
+    $sentinel = ['balance' => NULL, 'flagged' => FALSE, 'invoices' => [],
+      'students' => ['__SENTINEL_A__'], 'empty' => TRUE];
+    \Civi::cache('short')->set($cacheKeyA, $sentinel, 60);
+
+    $this->logInAs($lonelyB);
+    $resultB = (new GetMyBalance('BoosterPortal', 'getMyBalance'))
+      ->setCheckPermissions(FALSE)
+      ->execute()->first();
+    $this->assertTrue($resultB['empty']);
+    $this->assertNotSame(['__SENTINEL_A__'], $resultB['students'],
+      'Contact B must never see contact A\'s cached payload — cache keys must be isolated per contact');
+
+    $cachedB = \Civi::cache('short')->get($cacheKeyB);
+    $this->assertNotNull($cachedB, 'B\'s own empty state must also be cached independently');
+    $this->assertNotSame($sentinel, $cachedB, 'B\'s cache entry must be its own, never a copy of A\'s sentinel');
+  }
+
 }
