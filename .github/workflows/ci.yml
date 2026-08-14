@@ -1,8 +1,20 @@
 name: ci
-on: [push, pull_request]
+# main-push only — NOT pull_request. This runs on a self-hosted runner on a
+# personal host (see README's "CI" section, site repo); a public repo +
+# self-hosted runner + `pull_request` trigger is a well-known arbitrary code
+# execution vector (a fork PR's workflow runs with access to this runner/host).
+# Only bmsimp can push to main, so nothing is lost by dropping pull_request.
+# Do NOT re-add pull_request while this runs on a self-hosted runner on a
+# personal host. If volunteer PRs ever need CI, first require approval for ALL
+# outside collaborators (Settings > Actions > General > Fork pull request
+# workflows) and re-assess from there.
+on:
+  push:
+    branches: [main]
 jobs:
   headless-tests:
     runs-on: [self-hosted, linux, ddev]
+    timeout-minutes: 30
     steps:
       - name: Run suite at pushed SHA in the site's extension checkout
         run: |
@@ -16,12 +28,18 @@ jobs:
           # cd back into $EXT explicitly on exit: by the time this trap fires the
           # script has cd'd elsewhere (into $SITE, then the site repo root for
           # check-invariants.sh), so without this the checkout/pull below would
-          # silently run against the wrong repo and leave $EXT detached.
+          # silently run against the wrong repo and leave $EXT detached. Note
+          # this trap does NOT fire on a hard kill (SIGKILL, e.g. from the
+          # timeout-minutes cap above or a runner crash) — see README.
           trap 'cd "$EXT" && git checkout main >/dev/null 2>&1 && git pull --ff-only >/dev/null 2>&1' EXIT
           cd $SITE
           if ! ddev describe >/dev/null 2>&1; then
             echo "ddev project not running — starting it"
             ddev start
           fi
+          # Idempotent — closes the "ddev restart/recreate wiped ~/.cv.json"
+          # failure mode (README > "Running extension tests") by re-running
+          # it on every CI invocation rather than assuming it's still set.
+          $HOME/projects/band-booster-portal/scripts/setup-test-db.sh
           ddev exec bash -c 'cd web/sites/default/files/civicrm/ext/boosterportal && /var/www/html/vendor/bin/phpunit tests/phpunit'
           cd $HOME/projects/band-booster-portal && ./scripts/check-invariants.sh

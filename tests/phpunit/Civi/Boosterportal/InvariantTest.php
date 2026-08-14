@@ -65,7 +65,12 @@ class InvariantTest extends TestCase implements HeadlessInterface {
       }
       $src = file_get_contents($file->getPathname());
       if (preg_match('/checkPermissions[\'"\s\]]*\s*(=>|=)\s*FALSE/i', $src)
-        || preg_match('/::(get|create|update|delete|save|run)\s*\(\s*FALSE\s*\)/', $src)) {
+        // Static (::get/::create/etc(FALSE)) form. Case-insensitive: PHP itself
+        // doesn't care whether FALSE/false/False is used, and neither should this.
+        || preg_match('/::(get|create|update|delete|save|run)\s*\(\s*FALSE\s*\)/i', $src)
+        // Fluent (->setCheckPermissions(FALSE)) form — the idiomatic way to build
+        // an Api4 action object incrementally; missed by both patterns above.
+        || preg_match('/->\s*setCheckPermissions\s*\(\s*FALSE\s*\)/i', $src)) {
         $offenders[] = $rel;
       }
     }
@@ -127,23 +132,45 @@ class InvariantTest extends TestCase implements HeadlessInterface {
    * rows. It also ships as reconciliation check #4b (Task 13).
    *
    * 'Employee of' is core's relationship type for the contribute-on-behalf-
-   * of-an-organisation flow. Verified empirically on this install (not
-   * assumed from core's default data) via
+   * of-an-organisation flow, resolved below via the same
+   * CRM_Contact_BAO_RelationshipType::getEmployeeRelationshipTypeID() call
+   * boosterportal.php's guard uses, and matched by ID rather than by name in
+   * the SQL: an admin can rename a RelationshipType's label
+   * (civicrm_relationship_type.name_a_b) from the UI, which would silently
+   * widen this audit's blind spot if it matched on the string 'Employee of'.
+   * Verified empirically on this install via
    * `cv api4 RelationshipType.get '{"where":[["name_a_b","CONTAINS","Employee"]]}'`
-   * -> id 5, name_a_b = 'Employee of', name_b_a = 'Employer of' — the same
-   * type CRM_Contact_BAO_RelationshipType::getEmployeeRelationshipTypeID()
-   * resolves and the same exemption boosterportal.php's guard carries.
+   * -> id 5, name_a_b = 'Employee of', name_b_a = 'Employer of' (label kept
+   * here only for the human-readable message below).
+   *
+   * Portal_Parent_of, by contrast, IS matched by name (not ID) below: it's a
+   * managed entity this extension owns (`update = unmodified` in its managed
+   * XML), so CiviCRM itself will not let it be renamed out from under this
+   * test the way a stock/admin-owned type like Employee of can be.
    */
   public function testNoOutOfBandPermissionedRows(): void {
+    $employeeTypeId = NULL;
+    try {
+      $employeeTypeId = \CRM_Contact_BAO_RelationshipType::getEmployeeRelationshipTypeID();
+    }
+    catch (\CRM_Core_Exception $e) {
+      // 'Employee of' relationship type missing/deleted — nothing to exempt;
+      // fall through with $employeeTypeId still NULL (matches no row, same
+      // as boosterportal.php's own allow-list building in that case).
+    }
+
     $sql = "
       SELECT r.id FROM civicrm_relationship r
       JOIN civicrm_relationship_type rt ON rt.id = r.relationship_type_id
       WHERE ((r.is_permission_a_b <> 0 OR r.is_permission_b_a <> 0)
-             AND rt.name_a_b NOT IN ('Portal_Parent_of', 'Employee of'))
+             AND rt.name_a_b != 'Portal_Parent_of'
+             AND r.relationship_type_id != %1)
          OR (rt.name_a_b = 'Portal_Parent_of' AND r.is_permission_b_a <> 0)
     ";
     $offenders = [];
-    $dao = \CRM_Core_DAO::executeQuery($sql);
+    $dao = \CRM_Core_DAO::executeQuery($sql, [
+      1 => [$employeeTypeId ?? 0, 'Integer'],
+    ]);
     while ($dao->fetch()) {
       $offenders[] = (int) $dao->id;
     }
