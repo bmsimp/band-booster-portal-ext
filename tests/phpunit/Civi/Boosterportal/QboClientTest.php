@@ -30,4 +30,29 @@ class QboClientTest extends TestCase {
     $this->assertSame(620.0, $n['BalanceWithJobs']);
   }
 
+  /**
+   * The SDK's XML-backed deserializer produces STRING leaf values, so a raw
+   * QBO Customer entity arrives with 'Active' => 'false' (string), not the
+   * PHP boolean FALSE the other tests use. (bool) 'false' === TRUE in PHP,
+   * so a naive cast silently marks every inactive customer as active. This
+   * is the real production shape — reproduced here rather than assumed.
+   */
+  public function testNormalizeCustomerParsesSdkStringFalseAsInactive(): void {
+    $raw = [
+      'Id' => '103', 'DisplayName' => 'Jones, Alex', 'Active' => 'false',
+      'Balance' => 0.0,
+    ];
+    $n = QboClient::normalizeCustomer($raw);
+    $this->assertFalse($n['Active'], "SDK string 'false' must normalize to boolean FALSE, not TRUE");
+  }
+
+  public function testNormalizeCustomerParsesSdkStringTrueAsActive(): void {
+    $raw = [
+      'Id' => '104', 'DisplayName' => 'Jones, Casey', 'Active' => 'true',
+      'Balance' => 0.0,
+    ];
+    $n = QboClient::normalizeCustomer($raw);
+    $this->assertTrue($n['Active'], "SDK string 'true' must normalize to boolean TRUE");
+  }
+
 }

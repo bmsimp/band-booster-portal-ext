@@ -25,6 +25,23 @@ class CRM_Boosterportal_Page_QboOAuth extends CRM_Core_Page {
     $session = CRM_Core_Session::singleton();
     $redirect = CRM_Utils_System::url('civicrm/admin/boosterportal/qbo', NULL, TRUE, NULL, FALSE, FALSE, TRUE);
 
+    // Consent denial: Intuit sends the user back with ?error=access_denied
+    // (and a 'state' but no 'code') when they cancel or refuse on its
+    // consent screen. Without this check that request falls through
+    // silently to the ordinary not-connected view below — same page,
+    // but with no indication anything happened, which reads as the click
+    // having done nothing. Also catches the general case of 'state' present
+    // without 'code' for any other reason Intuit declines to issue a code.
+    if (!empty($_GET['error']) || (!empty($_GET['state']) && empty($_GET['code']))) {
+      // Consume the pending state either way: this leg is done, successful
+      // or not, and a stale value should never linger for a later request.
+      $session->set(self::SESSION_STATE_KEY, NULL);
+      CRM_Core_Session::setStatus(
+        ts('QuickBooks connection was cancelled or refused — no changes made.'),
+        ts('Booster Portal'), 'alert');
+      CRM_Utils_System::redirect(CRM_Utils_System::url('civicrm/admin/boosterportal/qbo'));
+    }
+
     // Callback leg from Intuit. Validate state before touching the code at all.
     if (!empty($_GET['code']) && !empty($_GET['realmId'])) {
       $expectedState = $session->get(self::SESSION_STATE_KEY);
