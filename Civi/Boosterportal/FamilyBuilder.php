@@ -14,7 +14,59 @@ use Civi\Api4\Relationship;
  */
 class FamilyBuilder {
 
+  /**
+   * @param array $def
+   *   [
+   *     'household' => ['name' => string, 'qbo_customer_id' => ?string],
+   *     'parents' => [['first_name' => string, 'last_name' => string, 'email' => ?string], ...],
+   *     'students' => [['first_name' => string, 'last_name' => string, 'qbo_subcustomer_id' => ?string], ...],
+   *   ]
+   * @return array
+   *   [
+   *     'household_id' => int,
+   *     'parent_ids' => int[],
+   *       Positionally correlated with $def['parents']: $result['parent_ids'][$i] is the
+   *       contact created from $def['parents'][$i].
+   *     'student_ids' => int[],
+   *       Positionally correlated with $def['students']: $result['student_ids'][$i] is the
+   *       contact created from $def['students'][$i].
+   *   ]
+   * @throws \InvalidArgumentException
+   *   If required fields are missing, before any write happens.
+   */
   public static function create(array $def): array {
+    self::validate($def);
+
+    $result = NULL;
+    \CRM_Core_Transaction::create()->run(function($tx) use ($def, &$result) {
+      $result = self::doCreate($def);
+    });
+    return $result;
+  }
+
+  /**
+   * Validate required fields up front so a malformed $def fails loudly, before any
+   * contact/relationship is written, instead of leaving a partial/ghost family behind.
+   *
+   * @throws \InvalidArgumentException
+   */
+  private static function validate(array $def): void {
+    if (empty($def['household']['name'])) {
+      throw new \InvalidArgumentException('FamilyBuilder: household.name is required.');
+    }
+    foreach (($def['parents'] ?? []) as $i => $p) {
+      if (empty($p['first_name']) || empty($p['last_name'])) {
+        throw new \InvalidArgumentException("FamilyBuilder: parents[$i] requires first_name and last_name.");
+      }
+    }
+    foreach (($def['students'] ?? []) as $i => $s) {
+      if (empty($s['first_name']) || empty($s['last_name'])) {
+        throw new \InvalidArgumentException("FamilyBuilder: students[$i] requires first_name and last_name.");
+      }
+    }
+  }
+
+  private static function doCreate(array $def): array {
     $householdId = Contact::create(FALSE)
       ->addValue('contact_type', 'Household')
       ->addValue('household_name', $def['household']['name'])

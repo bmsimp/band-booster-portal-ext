@@ -2,6 +2,7 @@
 namespace Civi\Boosterportal;
 
 use Civi\Api4\Contact;
+use Civi\Api4\Email;
 use Civi\Api4\Relationship;
 use Civi\Test;
 use Civi\Test\HeadlessInterface;
@@ -43,6 +44,86 @@ class FamilyBuilderTest extends TestCase implements HeadlessInterface, Transacti
       ->addWhere('relationship_type_id:name', '=', 'Household Member of')
       ->execute()->count();
     $this->assertSame(2, $memberCount);
+  }
+
+  public function testMultipleParentsAndStudentsGetFullyCrossedPermissionedEdges(): void {
+    $fam = FamilyBuilder::create([
+      'household' => ['name' => 'Jones Family'],
+      'parents' => [
+        ['first_name' => 'Jo', 'last_name' => 'Jones'],
+        ['first_name' => 'Al', 'last_name' => 'Jones'],
+      ],
+      'students' => [
+        ['first_name' => 'Kim', 'last_name' => 'Jones'],
+        ['first_name' => 'Lee', 'last_name' => 'Jones'],
+      ],
+    ]);
+
+    $this->assertCount(2, $fam['parent_ids']);
+    $this->assertCount(2, $fam['student_ids']);
+
+    $edges = Relationship::get(FALSE)
+      ->addWhere('contact_id_a', 'IN', $fam['parent_ids'])
+      ->addWhere('contact_id_b', 'IN', $fam['student_ids'])
+      ->addWhere('relationship_type_id:name', '=', 'Portal_Parent_of')
+      ->addSelect('contact_id_a', 'contact_id_b', 'is_permission_a_b', 'is_permission_b_a')
+      ->execute();
+    $this->assertSame(4, $edges->count());
+
+    // Every parent x student pair must be present exactly once, each view-only.
+    $pairs = [];
+    foreach ($edges as $edge) {
+      $pairs[] = $edge['contact_id_a'] . ':' . $edge['contact_id_b'];
+      $this->assertEquals(\CRM_Contact_BAO_Relationship::VIEW, $edge['is_permission_a_b']);
+      $this->assertEquals(\CRM_Contact_BAO_Relationship::NONE, $edge['is_permission_b_a']);
+    }
+    $expectedPairs = [];
+    foreach ($fam['parent_ids'] as $parentId) {
+      foreach ($fam['student_ids'] as $studentId) {
+        $expectedPairs[] = "$parentId:$studentId";
+      }
+    }
+    sort($pairs);
+    sort($expectedPairs);
+    $this->assertSame($expectedPairs, $pairs);
+
+    $memberCount = Relationship::get(FALSE)
+      ->addWhere('contact_id_b', '=', $fam['household_id'])
+      ->addWhere('relationship_type_id:name', '=', 'Household Member of')
+      ->execute()->count();
+    $this->assertSame(4, $memberCount);
+  }
+
+  public function testParentWithNoEmailCreatesFineWithNoEmailRow(): void {
+    $fam = FamilyBuilder::create([
+      'household' => ['name' => 'NoEmail Family'],
+      'parents' => [['first_name' => 'Noe', 'last_name' => 'Mail']],
+      'students' => [['first_name' => 'Stu', 'last_name' => 'Dent']],
+    ]);
+
+    $emailCount = Email::get(FALSE)
+      ->addWhere('contact_id', '=', $fam['parent_ids'][0])
+      ->execute()->count();
+    $this->assertSame(0, $emailCount);
+  }
+
+  public function testMissingHouseholdNameThrowsAndCreatesNoContacts(): void {
+    $before = Contact::get(FALSE)->selectRowCount()->execute()->count();
+
+    try {
+      FamilyBuilder::create([
+        'household' => ['qbo_customer_id' => '999'],
+        'parents' => [['first_name' => 'Ghost', 'last_name' => 'Parent']],
+        'students' => [['first_name' => 'Ghost', 'last_name' => 'Student']],
+      ]);
+      $this->fail('Expected InvalidArgumentException was not thrown.');
+    }
+    catch (\InvalidArgumentException $e) {
+      // expected
+    }
+
+    $after = Contact::get(FALSE)->selectRowCount()->execute()->count();
+    $this->assertSame($before, $after, 'A failed FamilyBuilder::create() call must not leave ghost contacts behind.');
   }
 
 }
