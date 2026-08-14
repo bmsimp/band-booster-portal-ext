@@ -158,6 +158,40 @@ class InvariantTest extends TestCase implements HeadlessInterface {
       // both gated 'administer CiviCRM' in BoosterPortal::permissions() —
       // cron/admin-only, identical shape to refreshMirror (Task 10).
       'Civi/Boosterportal/Recon.php',
+      // Task 15: magic-link auth. Pre-auth BY CONSTRUCTION — issuing and
+      // redeeming a link IS how a session comes to exist, so there is no
+      // logged-in contact for an ACL-checked Api4 call to run as in the
+      // first place; every lookup this file makes (email -> eligible
+      // contact, token -> contact) necessarily happens before any
+      // authentication decision. This is not a checkPermissions=FALSE
+      // Api4 call at all (none of this file uses Api4) — it is raw,
+      // fully-parameterized CRM_Core_DAO::executeQuery() SQL throughout
+      // (every value passed via the %N placeholder mechanism, never
+      // interpolated), same shape as Mirror.php/Recon.php/Importer.php.
+      // Listed here anyway, per this test's own stated policy above ("get
+      // added to this list IN the task that introduces them"), because
+      // MagicLink.php is squarely the kind of file that policy exists
+      // for: a future edit that adds a checkPermissions=FALSE Api4 call
+      // here would be easy to wave through as "well it's pre-auth,
+      // obviously" without the scrutiny an unlisted new offender would
+      // get. Containment specific to this file:
+      //  - Its two entry points, MagicLink::issue()/sendLink() and
+      //    MagicLink::redeem(), are reachable ONLY from
+      //    CRM_Boosterportal_Page_PortalLogin (xml/Menu/boosterportal.xml's
+      //    civicrm/portal/request-link and civicrm/portal/login routes,
+      //    both *always allow* by design — that IS the sign-in door).
+      //  - issue()'s eligibility lookup (eligibleContactIdFor()) mirrors
+      //    boosterportal_civicrm_aclWhereClause()'s own subquery exactly —
+      //    Portal_Parent_of only, contact_id_a = candidate (outgoing),
+      //    is_active, VIEW/EDIT whitelist, date window — see the class
+      //    docblock and MagicLinkTest::testEmployeeOfEdgeIsNotLinkEligible()
+      //    for why the plan's original bare "is_permission_a_b > 0" join
+      //    was tightened to this.
+      //  - Every token is single-use (redeem() UPDATEs used_at in the same
+      //    request it validates), 20-minute-windowed, and rate-limited to
+      //    3/address/hour — MagicLinkTest covers all three plus
+      //    hashed-at-rest storage and garbage/truncated-token handling.
+      'Civi/Boosterportal/MagicLink.php',
     ];
     // __DIR__ is .../boosterportal/tests/phpunit/Civi/Boosterportal — 4 levels
     // up is the extension root, whose Civi/ subdirectory is what we scan.

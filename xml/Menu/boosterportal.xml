@@ -6,4 +6,18 @@
     <title>QuickBooks Connection</title>
     <access_arguments>administer CiviCRM</access_arguments>
   </item>
+  <item>
+    <path>civicrm/portal/request-link</path>
+    <page_callback>CRM_Boosterportal_Page_PortalLogin</page_callback>
+    <title>Sign in</title>
+    <access_arguments>*always allow*</access_arguments>
+    <is_public>true</is_public>
+  </item>
+  <item>
+    <path>civicrm/portal/login</path>
+    <page_callback>CRM_Boosterportal_Page_PortalLogin</page_callback>
+    <title>Signing you in</title>
+    <access_arguments>*always allow*</access_arguments>
+    <is_public>true</is_public>
+  </item>
 </menu>
