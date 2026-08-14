@@ -113,6 +113,31 @@ class ReconTest extends TestCase implements HeadlessInterface, TransactionalInte
     $this->assertSame('CRITICAL', $check1['severity'], 'Check 1 must be CRITICAL — it is the sole control on QBO-side divergence');
   }
 
+  /**
+   * Probe-verified gap (coordinator review of 79d8c8f): a demoted/never-
+   * parented QBO sub-customer — CiviCRM has a live student contact linked
+   * to it via qbo_subcustomer_id, the mirror row carries a real balance,
+   * but QBO's own ParentRef on that row is NULL — used to produce ZERO
+   * findings anywhere, because check 1's WHERE required `parent_ref IS NOT
+   * NULL` before testing it against the household. A linked student whose
+   * mirror row lacks the expected parent IS the divergence.
+   */
+  public function testCheck1FiresWhenLinkedStudentsMirrorRowHasNullParentRef(): void {
+    FamilyBuilder::create([
+      'household' => ['name' => 'Demoted Family', 'qbo_customer_id' => '401'],
+      'parents' => [['first_name' => 'D', 'last_name' => 'Demoted', 'email' => 'd@example.org']],
+      'students' => [['first_name' => 'Kid', 'last_name' => 'Demoted', 'qbo_subcustomer_id' => '402']],
+    ]);
+    $this->mirrorRow('401', 'Demoted Family', NULL, 0.0, 0.0, 1, 'd@example.org');
+    $this->mirrorRow('402', 'Kid Demoted', NULL, 250.0); // parent_ref NULL, real balance owed
+    $findings = (new Recon())->run();
+    $nums = array_column($findings, 'check_num');
+    $this->assertContains(1, $nums,
+      "Check 1 must fire when a linked student's mirror row has a NULL ParentRef and a live balance — NULL is not \"no opinion\", it's \"wrong\"");
+    $check1 = current(array_filter($findings, fn($f) => $f['check_num'] === 1));
+    $this->assertSame('CRITICAL', $check1['severity']);
+  }
+
   public function testCheck1DoesNotFireWhenParentRefMatchesHousehold(): void {
     FamilyBuilder::create([
       'household' => ['name' => 'Right Family', 'qbo_customer_id' => '301'],
@@ -156,6 +181,33 @@ class ReconTest extends TestCase implements HeadlessInterface, TransactionalInte
     ]);
     $nums = array_column((new Recon())->run(), 'check_num');
     $this->assertContains(2, $nums, 'Check 2 must fire when two Students carry the same qbo_subcustomer_id');
+  }
+
+  /**
+   * Probe-verified gap (coordinator review of 79d8c8f): check 2 had no
+   * civicrm_contact join, so a trashed (is_deleted=1) duplicate still
+   * counted toward `HAVING c > 1` — a legitimately-resolved duplicate
+   * (e.g. one side trashed after a merge) would keep paging as CRITICAL
+   * forever.
+   */
+  public function testCheck2StopsFiringOnceOneDuplicateHouseholdIsTrashed(): void {
+    $familyA = FamilyBuilder::create([
+      'household' => ['name' => 'Trash Dupe House A', 'qbo_customer_id' => '551'],
+      'parents' => [['first_name' => 'A', 'last_name' => 'TrashDupeA']],
+      'students' => [],
+    ]);
+    FamilyBuilder::create([
+      'household' => ['name' => 'Trash Dupe House B', 'qbo_customer_id' => '551'],
+      'parents' => [['first_name' => 'B', 'last_name' => 'TrashDupeB']],
+      'students' => [],
+    ]);
+    $nums = array_column((new Recon())->run(), 'check_num');
+    $this->assertContains(2, $nums, 'Sanity: two live Households sharing a qbo_customer_id must fire check 2');
+
+    \CRM_Core_DAO::executeQuery('UPDATE civicrm_contact SET is_deleted = 1 WHERE id = %1',
+      [1 => [$familyA['household_id'], 'Integer']]);
+    $nums = array_column((new Recon())->run(), 'check_num');
+    $this->assertNotContains(2, $nums, 'Trashing one of the two duplicate Households must clear check 2 on re-run');
   }
 
   public function testCheck2DoesNotFireOnDistinctIds(): void {
