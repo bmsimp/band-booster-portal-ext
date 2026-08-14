@@ -46,6 +46,15 @@ class BoosterPortal extends AbstractEntity {
       ->setCheckPermissions($checkPermissions);
   }
 
+  /**
+   * Task 15 adversarial review, MINOR-3: daily housekeeping for
+   * boosterportal_login_token (deletes old used/expired rows).
+   */
+  public static function purgeLoginTokens(bool $checkPermissions = TRUE) {
+    return (new \Civi\Api4\Action\BoosterPortal\PurgeLoginTokens(static::getEntityName(), __FUNCTION__))
+      ->setCheckPermissions($checkPermissions);
+  }
+
   public static function permissions(): array {
     return [
       'refreshMirror' => ['administer CiviCRM'],
@@ -62,6 +71,9 @@ class BoosterPortal extends AbstractEntity {
       // ever reachable from a parent-facing route.
       'runRecon' => ['administer CiviCRM'],
       'runReconHourly' => ['administer CiviCRM'],
+      // Task 15 adversarial review, MINOR-3: cron/admin-only, same shape as
+      // refreshMirror/runRecon — never reachable from a parent-facing route.
+      'purgeLoginTokens' => ['administer CiviCRM'],
     ];
   }
 

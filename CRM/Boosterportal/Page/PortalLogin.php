@@ -31,12 +31,42 @@ use Civi\Boosterportal\MagicLink;
  * distinguishing error) rather than surfaced as a CSRF failure message —
  * consistent with this page's anti-enumeration design (never give an
  * observer more signal than "here is the form").
+ *
+ * ADVERSARIAL SECURITY REVIEW (post-launch, Task 15 follow-up):
+ *
+ *  IMPORTANT-2(ii): before finalizing a session, the loaded Drupal user must
+ *  carry ONLY the parent role (and must not be uid 1, Drupal's superuser,
+ *  which bypasses permission checks regardless of its role list). A contact
+ *  who is both a parent AND a board member (or any other elevated role)
+ *  must never get a PRIVILEGED session merely by walking the magic-link
+ *  door — that door was designed and reviewed for the parent role only.
+ *  See isSafeParentUser().
+ *
+ *  IMPORTANT-4: Referrer-Policy: no-referrer is set on every response from
+ *  this page. civicrm/portal/login?t=... carries the (already single-use,
+ *  now-consumed-on-redemption) raw token in its own URL — without this
+ *  header, navigating away from that URL to any third-party resource (an
+ *  external link, a remotely-hosted image, etc.) would leak the full URL,
+ *  token included, to that third party via the Referer request header. The
+ *  token dies on first redemption regardless (IMPORTANT-1), which already
+ *  shrinks this to a narrow window, but the header costs nothing and closes
+ *  it further. runbooks/magic-links.md documents the residual (access logs
+ *  / any CDN or proxy in front of this site, e.g. Cloudflare, still see the
+ *  full URL server-side — this header only stops the BROWSER from handing
+ *  it to a third party on subsequent navigation).
  */
 class CRM_Boosterportal_Page_PortalLogin extends CRM_Core_Page {
 
   private const SESSION_CSRF_KEY = 'boosterportal_request_link_csrf';
 
   public function run() {
+    // IMPORTANT-4 — see class docblock. Guarded for the (non-HTTP) test/CLI
+    // context, where headers_sent() reads TRUE (or emitting one would just
+    // warn) and there is no browser on the other end to protect anyway.
+    if (!headers_sent() && php_sapi_name() !== 'cli') {
+      header('Referrer-Policy: no-referrer');
+    }
+
     $path = CRM_Utils_System::currentPath();
 
     if ($path === 'civicrm/portal/login') {
@@ -58,22 +88,62 @@ class CRM_Boosterportal_Page_PortalLogin extends CRM_Core_Page {
     }
 
     // Log into the CMS account provisioned for this contact (UFMatch).
+    // MINOR-2: scope to this CiviCRM domain explicitly — UFMatch is a
+    // multi-domain table (civicrm_uf_match.domain_id) and every other
+    // lookup against it in CiviCRM core itself (CRM_Core_BAO_UFMatch) scopes
+    // by domain the same way; a bare contact_id match would be wrong on any
+    // multi-domain install even though this site only ever has one domain.
     $ufMatch = \Civi\Api4\UFMatch::get(FALSE)
-      ->addWhere('contact_id', '=', $cid)->execute()->first();
+      ->addWhere('contact_id', '=', $cid)
+      ->addWhere('domain_id', '=', CRM_Core_Config::domainID())
+      ->execute()->first();
     if (!$ufMatch) {
       CRM_Core_Session::setStatus(ts('No portal account exists for this address yet. Contact the boosters.'), ts('Sign in'), 'error');
       CRM_Utils_System::redirect(CRM_Utils_System::url('civicrm/portal/request-link'));
       return;
     }
     $user = \Drupal\user\Entity\User::load($ufMatch['uf_id']);
-    if (!$user) {
-      // Defensive: UFMatch row survives a Drupal user deletion.
+    if (!$user || !self::isSafeParentUser($user)) {
+      // Deliberately the SAME message/redirect as "no account" and as the
+      // token-invalid branch above — this must never tell an observer
+      // WHICH reason a login failed for (unknown token vs. no account vs.
+      // "this account isn't allowed to use this door").
       CRM_Core_Session::setStatus(ts('No portal account exists for this address yet. Contact the boosters.'), ts('Sign in'), 'error');
       CRM_Utils_System::redirect(CRM_Utils_System::url('civicrm/portal/request-link'));
       return;
     }
     user_login_finalize($user);
     CRM_Utils_System::redirect(CRM_Utils_System::url('civicrm/portal'));
+  }
+
+  /**
+   * IMPORTANT-2(ii): TRUE only for a Drupal user that is safe to sign in as
+   * via a magic link — i.e. an ordinary parent account and nothing more.
+   * Reject:
+   *  - uid 1 (Drupal's superuser; bypasses every permission check regardless
+   *    of its assigned role list, so it must never be reachable via this
+   *    door under any circumstance);
+   *  - any account whose role list (excluding the two implicit/locked
+   *    anonymous/authenticated roles) is anything OTHER than exactly
+   *    ['parent'] — in particular, a person who is both a provisioned
+   *    parent AND (separately) a board_member/administrator must not
+   *    receive session privileges beyond "parent" just because they walked
+   *    in through the magic-link door instead of Entra SSO (Task 14).
+   *
+   * Public + static so this is independently testable without needing a
+   * full HTTP request/CRM_Core_Page::run() cycle — CiviCRM's headless test
+   * bootstrap does not boot Drupal's own service container (verified while
+   * building this), so this class carries only the pure decision logic;
+   * verified live against a real UFMatch row + Drupal roles table instead
+   * (see the Task 15 review report for the reproduction).
+   */
+  public static function isSafeParentUser(\Drupal\user\UserInterface $user): bool {
+    if ((int) $user->id() === 1) {
+      return FALSE;
+    }
+    $roles = $user->getRoles(TRUE); // TRUE excludes anonymous/authenticated.
+    sort($roles);
+    return $roles === ['parent'];
   }
 
   private function runRequestLink(): void {
