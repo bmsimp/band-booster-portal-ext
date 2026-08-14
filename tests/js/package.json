@@ -1,0 +1,8 @@
+{
+  "name": "boosterportal-widget-tests",
+  "private": true,
+  "description": "Tests for js/booster-balance.js — Node's built-in test runner, zero dependencies (quality-review IMPORTANT-3).",
+  "scripts": {
+    "test": "node --test"
+  }
+}

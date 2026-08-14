@@ -42,4 +42,15 @@ jobs:
           # it on every CI invocation rather than assuming it's still set.
           $HOME/projects/band-booster-portal/scripts/setup-test-db.sh
           ddev exec bash -c 'cd web/sites/default/files/civicrm/ext/boosterportal && /var/www/html/vendor/bin/phpunit tests/phpunit'
+          # quality-review IMPORTANT-3: js/booster-balance.js's own test suite
+          # (tests/js/) — Node's built-in test runner, zero deps. Run via
+          # `ddev exec` (not the runner's own `node`) for parity with every
+          # other test invocation in this workflow and because DDEV's node
+          # version is what's pinned/reproducible (.ddev/config.yaml),
+          # independent of whatever Node happens to be on the runner host.
+          # Deliberately inline in THIS step, not a separate workflow step:
+          # the `trap ... EXIT` above resets $EXT back to `main` the moment
+          # THIS step's script exits, so a later step would no longer be
+          # looking at the pushed SHA.
+          ddev exec bash -c 'cd web/sites/default/files/civicrm/ext/boosterportal/tests/js && node --test'
           cd $HOME/projects/band-booster-portal && ./scripts/check-invariants.sh

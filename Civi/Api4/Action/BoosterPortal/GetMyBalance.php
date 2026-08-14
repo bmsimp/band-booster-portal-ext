@@ -142,6 +142,16 @@ class GetMyBalance extends AbstractAction {
       }
     }
 
+    // MINOR-7 (quality review, Task 17): 'students' is NOT read by
+    // js/booster-balance.js today — the "Your students" SearchDisplay
+    // (Task 17) already covers that on the dashboard page, so the widget
+    // has no need to duplicate it. Kept in the payload anyway rather than
+    // removed: Task 12's GetMyBalanceTest asserts against this exact field
+    // as its family-A/family-B leak-detection signal (a sentinel display
+    // name must never appear in the OTHER family's response) — removing it
+    // would require reworking that regression test's signal, which is out
+    // of scope for a widget change. Fine to drop later if that test is ever
+    // rewritten to use a different signal and no UI consumer has appeared.
     $payload = [
       'balance' => $assembled['balance'],
       'flagged' => $assembled['flagged'],

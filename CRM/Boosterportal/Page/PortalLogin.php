@@ -143,23 +143,44 @@ class CRM_Boosterportal_Page_PortalLogin extends CRM_Core_Page {
    * Accepting plain scalars/arrays instead makes this a pure function
    * testable with zero Drupal dependency, and keeps the caller (runLogin(),
    * above) the one place that still talks to the real UserInterface —
-   * $user->id() and $user->getRoles(TRUE) (TRUE excludes the implicit/locked
-   * anonymous/authenticated roles; this function trusts that contract
-   * completely and does no filtering of its own — see PortalLoginTest's
-   * testParentWithImplicitAuthenticatedRoleIsSafe() for why that's safe).
-   * Verified live against a real UFMatch row + Drupal roles table too (see
-   * the Task 15 review report for that reproduction).
+   * $user->id() and $user->getRoles(TRUE).
+   *
+   * VERIFIED (quality-review MINOR-6, re-checked against both Drupal core
+   * source and a real account on this dev site): passing TRUE to
+   * \Drupal\user\Entity\User::getRoles() means "exclude the locked roles" —
+   * core's own implementation (web/core/modules/user/src/Entity/User.php)
+   * only ever adds the implicit anonymous/authenticated role when
+   * $exclude_locked_roles is FALSE, so a getRoles(TRUE) call NEVER returns
+   * 'authenticated' in the first place. Reproduced live: a real
+   * provisioned parent account's getRoles(TRUE) returned exactly
+   * ["parent"]; only getRoles(FALSE)/getRoles() (no argument) returned
+   * ["authenticated", "parent"]. So on the actual call path used by
+   * runLogin() above, $roles here never contains 'authenticated' — there
+   * was no bug to fix on that path.
+   *
+   * The filter below is added anyway, defensively: it costs nothing, it
+   * cannot loosen who's accepted (anonymous/authenticated are never
+   * privilege-bearing roles — stripping them only ever REMOVES candidates
+   * for rejection, it can't manufacture a match that wasn't otherwise
+   * there), and it means this function stays correct even if a future
+   * caller ever passes getRoles(FALSE)/getRoles()'s shape by mistake — a
+   * parent legitimately also holds the implicit 'authenticated' role and
+   * must not be rejected for it either way. See
+   * PortalLoginTest::testParentWithImplicitAuthenticatedRoleIsSafe() for
+   * the case this specifically covers now.
    *
    * @param int $uid
    * @param string[] $roles
-   *   Must already exclude the locked anonymous/authenticated roles (i.e.
-   *   the result of a real UserInterface::getRoles(TRUE) call) — this
-   *   function does not filter them itself.
+   *   Ordinarily the result of a real UserInterface::getRoles(TRUE) call
+   *   (which — see above — never includes the locked anonymous/
+   *   authenticated roles in the first place); tolerated here too if
+   *   present, defensively.
    */
   public static function isSafeParentUser(int $uid, array $roles): bool {
     if ($uid === 1) {
       return FALSE;
     }
+    $roles = array_values(array_diff($roles, ['anonymous', 'authenticated']));
     sort($roles);
     return $roles === ['parent'];
   }

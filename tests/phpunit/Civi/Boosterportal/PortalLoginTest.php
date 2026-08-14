@@ -50,17 +50,31 @@ class PortalLoginTest extends TestCase {
   }
 
   public function testParentWithImplicitAuthenticatedRoleIsSafe(): void {
-    // A real Drupal UserInterface::getRoles(TRUE) call already excludes the
-    // locked 'authenticated' role from its return value — the TRUE
-    // argument's entire purpose (see the function's own docblock).
-    // isSafeParentUser() does no filtering of its own; it trusts that
-    // contract completely. Modelling that here (rather than passing
-    // ['authenticated', 'parent'] unfiltered, which no real
-    // getRoles(TRUE) call would ever hand back) is what "decide per the
-    // real implementation's semantics" means for this case: an ordinary
-    // parent account, which always also nominally holds 'authenticated',
-    // must be treated as safe.
-    $this->assertTrue(\CRM_Boosterportal_Page_PortalLogin::isSafeParentUser(42, ['parent']));
+    // MINOR-6 (quality review) — actually distinct from
+    // testExactlyParentRoleIsSafe() now, and backed by a live check rather
+    // than an assumption: is ['authenticated', 'parent'] really the shape
+    // \Drupal\user\Entity\User::getRoles(TRUE) hands back for an ordinary
+    // parent account?
+    //
+    // Checked both ways: Drupal core's own getRoles() (User.php) only adds
+    // the locked anonymous/authenticated role when $exclude_locked_roles is
+    // FALSE — a getRoles(TRUE) call never includes it. Reproduced live
+    // against a real provisioned parent account on the dev site:
+    // getRoles(TRUE) => ["parent"]; only getRoles(FALSE)/getRoles() (no
+    // argument) => ["authenticated", "parent"]. So on the real call path
+    // (PortalLogin::runLogin() calls getRoles(TRUE)), 'authenticated' is
+    // NEVER present — isSafeParentUser() passing ['parent'] alone would
+    // already have covered the real-world case correctly.
+    //
+    // isSafeParentUser() now ALSO defensively strips 'authenticated'/
+    // 'anonymous' if they happen to be present anyway (belt-and-braces —
+    // see that function's own docblock for why this is safe: it can only
+    // ever remove a rejection reason, never manufacture a match). This test
+    // exercises exactly that defensive path with the UNSORTED
+    // ['authenticated', 'parent'] shape a getRoles(FALSE) call — or any
+    // future caller mistake — would actually produce, proving the
+    // filter-then-sort logic handles it correctly either way.
+    $this->assertTrue(\CRM_Boosterportal_Page_PortalLogin::isSafeParentUser(42, ['authenticated', 'parent']));
   }
 
   public function testNoRolesIsNotSafe(): void {
