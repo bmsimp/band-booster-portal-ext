@@ -1,0 +1,9 @@
+{
+  "type": "page",
+  "title": "Band Boosters — Your Family",
+  "server_route": "civicrm/portal",
+  "permission": "access CiviCRM",
+  "is_public": false,
+  "is_dashlet": false,
+  "placement": []
+}

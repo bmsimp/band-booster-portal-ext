@@ -172,13 +172,15 @@ class AclLeakTest extends TestCase implements HeadlessInterface, TransactionalIn
       $runCount, $skippedCount, $displays->count()
     ));
 
-    // TODO(Task 17): once the dashboard's own displays exist, tighten this to
-    // require $runCount > 0. Today 0 is legitimate: the only displays present
-    // in a headless install this early are CiviCRM's own admin screens, and a
-    // portal parent is correctly denied every one of them — that's not vacuous,
-    // it's the same "no leak because nothing ran" case handled above.
-    $this->assertGreaterThanOrEqual(0, $runCount,
-      "Sanity: {$runCount} of {$displays->count()} displays actually ran under checkPermissions ({$skippedCount} skipped as UnauthorizedException).");
+    // Task 17: the dashboard's own displays (Your_Students / your-students-table)
+    // now exist as managed entities, and parent A holds 'access CiviCRM' plus a
+    // real Portal_Parent_of edge to their own student — so at least this one
+    // display must actually run (not be skipped as UnauthorizedException) for
+    // the sweep above to have exercised any checkPermissions logic at all.
+    // Tightened from assertGreaterThanOrEqual(0, ...): zero real runs would now
+    // mean the sweep is vacuous — nothing was actually swept for leaks.
+    $this->assertGreaterThan(0, $runCount,
+      "Sanity: {$runCount} of {$displays->count()} displays actually ran under checkPermissions ({$skippedCount} skipped as UnauthorizedException). Zero means the sweep is vacuous.");
   }
 
   /**

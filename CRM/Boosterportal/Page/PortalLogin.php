@@ -103,7 +103,7 @@ class CRM_Boosterportal_Page_PortalLogin extends CRM_Core_Page {
       return;
     }
     $user = \Drupal\user\Entity\User::load($ufMatch['uf_id']);
-    if (!$user || !self::isSafeParentUser($user)) {
+    if (!$user || !self::isSafeParentUser((int) $user->id(), $user->getRoles(TRUE))) {
       // Deliberately the SAME message/redirect as "no account" and as the
       // token-invalid branch above — this must never tell an observer
       // WHICH reason a login failed for (unknown token vs. no account vs.
@@ -130,18 +130,36 @@ class CRM_Boosterportal_Page_PortalLogin extends CRM_Core_Page {
    *    receive session privileges beyond "parent" just because they walked
    *    in through the magic-link door instead of Entra SSO (Task 14).
    *
-   * Public + static so this is independently testable without needing a
-   * full HTTP request/CRM_Core_Page::run() cycle — CiviCRM's headless test
-   * bootstrap does not boot Drupal's own service container (verified while
-   * building this), so this class carries only the pure decision logic;
-   * verified live against a real UFMatch row + Drupal roles table instead
-   * (see the Task 15 review report for the reproduction).
+   * Public + static so this is independently testable. Deliberately takes
+   * (int $uid, array $roles) rather than a \Drupal\user\UserInterface — this
+   * was originally typed against that interface, but Task 17's warm-up
+   * (unit-testing this function) found that \Drupal\user\UserInterface is
+   * not autoloadable at all under this extension's headless PHPUnit
+   * bootstrap (tests/phpunit/bootstrap.php only boots the CiviCRM
+   * classloader level, not Drupal's own autoloader/service container — see
+   * PortalLoginTest, which hit "Class or interface Drupal\user\UserInterface
+   * does not exist" when trying to mock it), so a real interface-typed
+   * parameter cannot be stubbed there at all, not even with a PHPUnit mock.
+   * Accepting plain scalars/arrays instead makes this a pure function
+   * testable with zero Drupal dependency, and keeps the caller (runLogin(),
+   * above) the one place that still talks to the real UserInterface —
+   * $user->id() and $user->getRoles(TRUE) (TRUE excludes the implicit/locked
+   * anonymous/authenticated roles; this function trusts that contract
+   * completely and does no filtering of its own — see PortalLoginTest's
+   * testParentWithImplicitAuthenticatedRoleIsSafe() for why that's safe).
+   * Verified live against a real UFMatch row + Drupal roles table too (see
+   * the Task 15 review report for that reproduction).
+   *
+   * @param int $uid
+   * @param string[] $roles
+   *   Must already exclude the locked anonymous/authenticated roles (i.e.
+   *   the result of a real UserInterface::getRoles(TRUE) call) — this
+   *   function does not filter them itself.
    */
-  public static function isSafeParentUser(\Drupal\user\UserInterface $user): bool {
-    if ((int) $user->id() === 1) {
+  public static function isSafeParentUser(int $uid, array $roles): bool {
+    if ($uid === 1) {
       return FALSE;
     }
-    $roles = $user->getRoles(TRUE); // TRUE excludes anonymous/authenticated.
     sort($roles);
     return $roles === ['parent'];
   }
