@@ -125,7 +125,20 @@ class InvariantTest extends TestCase implements HeadlessInterface {
       //     (a legitimate multi-household parent must NOT be penalized —
       //     both households independently verify as complete), plus
       //     BalanceServiceTest's incomplete-household tests for the gate
-      //     itself.
+      //     itself. R1 precision note (second security review): "complete"
+      //     here is relative to students CiviCRM itself knows about — if
+      //     QBO has a sub-customer CiviCRM has never imported/wired up, the
+      //     gate can open on a count that is complete by CiviCRM's
+      //     bookkeeping but not by QBO's. That QBO-side half of the trust
+      //     boundary is NOT something this file (or BalanceService) can
+      //     close on its own — it's guarded by reconciliation checks #1/#2
+      //     (Task 13), which MUST be live before parents get the portal.
+      //     R3 (second security review): billingHouseholdsOf() also assigns
+      //     a student with two simultaneous household memberships (a data
+      //     anomaly) to exactly one household, deterministically — see
+      //     AclLeakTest::testBillingHouseholdsOfAssignsDuallyMemberedStudentToOneHouseholdOnly() —
+      //     so the same student's balance is never double-counted across
+      //     two households either.
       'Civi/Boosterportal/FamilyResolver.php',
     ];
     // __DIR__ is .../boosterportal/tests/phpunit/Civi/Boosterportal — 4 levels

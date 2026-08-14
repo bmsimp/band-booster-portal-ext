@@ -185,13 +185,27 @@ class FamilyResolver {
    * containment argument (input scoping AND the BalanceService-side
    * complete-set gate that bounds what the output may be used for).
    *
+   * R3 (second security review): the underlying data model doesn't
+   * structurally prevent a single student contact from holding TWO
+   * simultaneous active "Household Member of" edges (nothing here creates
+   * that, but nothing prevents a hand-edit or import anomaly from doing
+   * so either). Left alone, that student would be assigned to — and their
+   * balance counted toward — BOTH households, double-counting real money.
+   * A student is therefore assigned to exactly ONE household: whichever
+   * has the LOWEST household id, deterministically (rows arrive ordered by
+   * household id ascending, so "first seen" IS "lowest id" — see the loop
+   * below). See
+   * AclLeakTest::testBillingHouseholdsOfAssignsDuallyMemberedStudentToOneHouseholdOnly().
+   *
    * @param array<array{id: int, display_name: string, qbo_subcustomer_id: string}> $students
    *   Must be studentsOf()'s own return for the same contact — never
    *   caller-supplied ids.
    * @return array<int, array{id: int, qbo_customer_id: string, students: array}>
    *   Keyed by household id, ordered by household id ascending
    *   (deterministic). Each entry's 'students' is the subset of $students
-   *   verified as belonging to that household, ordered by student id.
+   *   verified as belonging to that household (each student appears in AT
+   *   MOST ONE entry — see R3 above), ordered by student id. A household
+   *   left with no students after that de-duplication is omitted entirely.
    */
   public static function billingHouseholdsOf(array $students): array {
     if (!$students) {
@@ -220,6 +234,7 @@ class FamilyResolver {
       ->execute();
 
     $households = [];
+    $assignedStudentIds = [];
     foreach ($rows as $row) {
       $hhId = (int) $row['id'];
       $studentId = (int) $row['member.contact_id_a'];
@@ -227,6 +242,11 @@ class FamilyResolver {
         // Defensive: a join row for a student id we didn't ask about.
         // Should not happen (the join is scoped to $studentIds), but never
         // silently include a student this method wasn't told about.
+        continue;
+      }
+      if (isset($assignedStudentIds[$studentId])) {
+        // R3: already assigned to an earlier (lower id, since rows are
+        // ordered by household id ascending) household — skip.
         continue;
       }
       if (!isset($households[$hhId])) {
@@ -237,7 +257,13 @@ class FamilyResolver {
         ];
       }
       $households[$hhId]['students'][$studentId] = $studentsById[$studentId];
+      $assignedStudentIds[$studentId] = TRUE;
     }
+
+    // A household that ends up with no assigned students (every one of its
+    // members here was already claimed by an earlier household, R3) isn't
+    // a billing source for this call — drop the empty shell.
+    $households = array_filter($households, fn(array $hh): bool => !empty($hh['students']));
 
     ksort($households);
     foreach ($households as &$hh) {

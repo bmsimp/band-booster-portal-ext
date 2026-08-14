@@ -135,20 +135,28 @@ class BalanceServiceTest extends TestCase {
 
   // --- C1/C2: the complete-household gate ---
 
-  public function testIncompleteHouseholdNeverCrossChecksAndFlagsWithReason(): void {
+  public function testIncompleteHouseholdNeverCrossChecksAndMarksPartialWithReason(): void {
     // BalanceWithJobs (900) is deliberately WRONG/high — if the cross-check
     // ran anyway, "higher figure" logic would surface 900, not 620. It must
     // not run at all when the household is incomplete (a strict subset of
     // its students is visible to this parent).
+    //
+    // R2 (second security review): a structural, by-design partial view is
+    // NOT the same signal as a genuine cross-check mismatch — conflating
+    // them as one 'flagged' bit meant every legitimate split family fired
+    // the treasurer's mismatch flag forever, diluting the signal. Partial
+    // views get their OWN field ('partial'); 'flagged' is reserved for an
+    // actual disagreement between BalanceWithJobs and the expected total.
     $svc = new BalanceService($this->clientReturning([
       '101' => $this->cust('101', 50.0, 900.0),
       '102' => $this->cust('102', 620.0, NULL, '101'),
     ]));
     $r = $svc->familyBalance('101', ['102'], FALSE);
     $this->assertSame(620.0, $r['balance'], 'Incomplete household must show only the verified student(s)\' own Balance sum');
-    $this->assertTrue($r['flagged']);
+    $this->assertFalse($r['flagged'], 'A by-design partial view is not a cross-check mismatch — must not set flagged');
+    $this->assertTrue($r['partial'], 'Partial household view must be its own distinct signal');
     $this->assertStringContainsString('partial household view', $r['detail']['reason'] ?? '',
-      'Incomplete-household flag must carry the specific reason a reconciliation reader needs');
+      'Partial-household detail must carry the specific reason a reconciliation reader needs');
   }
 
   public function testIncompleteHouseholdNeverFetchesHouseholdCustomerAtAll(): void {
@@ -178,7 +186,24 @@ class BalanceServiceTest extends TestCase {
     $svc = new BalanceService($client);
     $r = $svc->familyBalance('101', ['102'], FALSE);
     $this->assertSame(620.0, $r['balance']);
-    $this->assertTrue($r['flagged']);
+    $this->assertFalse($r['flagged']);
+    $this->assertTrue($r['partial']);
+  }
+
+  public function testDuplicateStudentIdWithinOneHouseholdCountedOnce(): void {
+    // R3 (second security review): the same array_unique() protection
+    // invoice scoping already has, applied to balance summation too — a
+    // duplicate qbo id in the verified list (defensive; should not
+    // ordinarily happen) must never be double-counted. Without dedup this
+    // would sum 620 twice (1240), disagree with BalanceWithJobs (620), and
+    // wrongly show 1240 flagged; with dedup it agrees cleanly at 620.
+    $svc = new BalanceService($this->clientReturning([
+      '101' => $this->cust('101', 0.0, 620.0),
+      '102' => $this->cust('102', 620.0, NULL, '101'),
+    ]));
+    $r = $svc->familyBalance('101', ['102', '102'], TRUE);
+    $this->assertSame(620.0, $r['balance'], 'A duplicate student qbo id must be summed once, not twice');
+    $this->assertFalse($r['flagged']);
   }
 
   // --- I2/M3: multi-household assembly + invoice scoping (BalanceService::balanceForHouseholds) ---
@@ -207,7 +232,8 @@ class BalanceServiceTest extends TestCase {
     ]);
 
     $this->assertSame(620.0, $result['balance'], 'Household aggregate must never appear — only the visible student\'s own Balance');
-    $this->assertTrue($result['flagged']);
+    $this->assertFalse($result['flagged'], 'A by-design partial view is not a cross-check mismatch');
+    $this->assertTrue($result['partial']);
     $this->assertSame(['102'], $client->requestedInvoiceIds,
       'Invoice request must be limited to the verified student id — household qbo id excluded (incomplete), sibling student 103 excluded');
     foreach ($result['invoices'] as $inv) {
@@ -241,6 +267,7 @@ class BalanceServiceTest extends TestCase {
 
     $this->assertSame(450.0, $result['balance']);
     $this->assertFalse($result['flagged'], 'Two legitimately complete, agreeing households must never carry a permanent flag');
+    $this->assertFalse($result['partial'], 'Two complete households must never be marked partial either');
     $requested = $client->requestedInvoiceIds;
     sort($requested);
     $this->assertSame(['201', '202', '301', '302'], $requested,

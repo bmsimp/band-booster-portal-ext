@@ -366,4 +366,48 @@ class AclLeakTest extends TestCase implements HeadlessInterface, TransactionalIn
     $this->assertSame(['801', '901'], $qboIds);
   }
 
+  /**
+   * R3 (second security review): the SQL model doesn't structurally
+   * prevent a single student contact from having TWO simultaneous active
+   * "Household Member of" edges (a data anomaly — the importer/FamilyBuilder
+   * never produce this, but nothing stops a hand-edit). Without dedup, that
+   * student would be counted toward BOTH households' balances — double
+   * counting real money owed. billingHouseholdsOf() assigns a dually-
+   * membered student to exactly ONE household: the lower household id,
+   * deterministically (rows arrive ordered by household id ascending).
+   */
+  public function testBillingHouseholdsOfAssignsDuallyMemberedStudentToOneHouseholdOnly(): void {
+    $hLow = FamilyBuilder::create([
+      'household' => ['name' => 'Low House', 'qbo_customer_id' => '1001'],
+      'parents' => [['first_name' => 'Dual', 'last_name' => 'Parent', 'email' => 'dual@example.org']],
+      'students' => [['first_name' => 'Shared', 'last_name' => 'Kid', 'qbo_subcustomer_id' => '1002']],
+    ]);
+    $hHigh = FamilyBuilder::create([
+      'household' => ['name' => 'High House', 'qbo_customer_id' => '1101'],
+      'parents' => [],
+      'students' => [],
+    ]);
+    // The anomaly: give the SAME student a second, active "Household Member
+    // of" edge to a SECOND household. $hLow's household contact id is lower
+    // (created first, in the same transactional test), so it must win.
+    \Civi\Api4\Relationship::create(FALSE)
+      ->addValue('contact_id_a', $hLow['student_ids'][0])
+      ->addValue('contact_id_b', $hHigh['household_id'])
+      ->addValue('relationship_type_id:name', 'Household Member of')
+      ->execute();
+    $this->assertLessThan($hHigh['household_id'], $hLow['household_id'],
+      'Fixture assumption: hLow must have the lower contact id — test is vacuous otherwise');
+
+    $this->createLoggedInUserFor($hLow['parent_ids'][0]);
+    \CRM_Core_Config::singleton()->userPermissionClass->permissions = ['access CiviCRM'];
+
+    $students = FamilyResolver::studentsOf($hLow['parent_ids'][0]);
+    $this->assertSame(['1002'], array_column($students, 'qbo_subcustomer_id'));
+
+    $households = FamilyResolver::billingHouseholdsOf($students);
+    $this->assertCount(1, $households, 'The dually-membered student must be assigned to exactly ONE household, not both');
+    $only = array_values($households)[0];
+    $this->assertSame('1001', $only['qbo_customer_id'], 'Lower household id must win deterministically');
+  }
+
 }

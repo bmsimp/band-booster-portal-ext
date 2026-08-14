@@ -19,6 +19,28 @@ namespace Civi\Boosterportal;
  * fetched (see the method body) — "never read BalanceWithJobs" is
  * structural, not just an unused return value.
  *
+ * R1 precision note (second security review): "complete" here is relative
+ * to students CiviCRM itself knows about — a Portal_Parent_of/Household
+ * Member of edge, a Booster_QBO_Student.qbo_subcustomer_id. If QBO has a
+ * sub-customer CiviCRM has never heard of (never imported, never wired to a
+ * Household Member of edge), the gate opens on a count that is complete by
+ * CiviCRM's bookkeeping but not by QBO's, and the resulting aggregate could
+ * still include that unknown student's balance. This is a pre-existing
+ * trust boundary this gate does not and cannot close on its own — closing
+ * the QBO-side half is reconciliation checks #1/#2 (Task 13), which MUST be
+ * live before parents get the portal.
+ *
+ * R2 (second security review): a by-design partial view (this parent can
+ * only see SOME of a household's students — structural, not fixable by
+ * retrying) is a DIFFERENT signal from a genuine cross-check mismatch, and
+ * conflating them into one 'flagged' bit meant every legitimate split
+ * family fired the treasurer's mismatch flag forever, drowning out real
+ * findings. The two are now separate fields: 'flagged' is reserved for an
+ * actual BalanceWithJobs-vs-expected disagreement (warrants a WARNING log
+ * and the treasurer's attention); 'partial' marks a by-design incomplete
+ * view (an INFO log — informational, not actionable — see GetMyBalance)
+ * and never sets 'flagged'.
+ *
  * I2/M3: balanceForHouseholds() is the multi-household entry point
  * (FamilyResolver::billingHouseholdsOf() — a parent can legitimately have
  * verified students across more than one billing household). It applies the
@@ -38,15 +60,24 @@ class BalanceService {
    * @param string $householdQboId  the family's parent Customer id
    * @param string[] $studentQboIds the VERIFIED students' sub-customer ids
    *   for this household (never the household's full student list unless
-   *   $completeHousehold is also TRUE)
+   *   $completeHousehold is also TRUE). Deduplicated internally (R3) so a
+   *   repeated id is never summed twice.
    * @param bool $completeHousehold
    *   TRUE only when $studentQboIds is this household's entire active
    *   student set, not merely the subset the caller can see. Gates the
    *   §4.6 cross-check: FALSE makes reading/comparing BalanceWithJobs
    *   structurally unreachable (see below) rather than merely unused.
-   * @return array{balance: float, flagged: bool, detail: array}
+   * @return array{balance: float, flagged: bool, partial: bool, detail: array}
+   *   'flagged': a genuine BalanceWithJobs-vs-expected mismatch. 'partial':
+   *   a by-design incomplete view — the two never overlap (R2).
    */
   public function familyBalance(string $householdQboId, array $studentQboIds, bool $completeHousehold): array {
+    // R3: the same array_unique() protection invoice scoping already
+    // applies (balanceForHouseholds(), below), so a duplicate qbo id in the
+    // list — defensive; should not ordinarily happen — is never summed
+    // twice.
+    $studentQboIds = array_values(array_unique($studentQboIds));
+
     $studentSum = 0.0;
     foreach ($studentQboIds as $sid) {
       $c = $this->client->getCustomer($sid);
@@ -59,9 +90,11 @@ class BalanceService {
       // compared — deliberately no call to
       // $this->client->getCustomer($householdQboId) anywhere on this path.
       // The displayed balance is exactly the sum of the students this
-      // parent CAN see, nothing else, always flagged so reconciliation
-      // (not this parent's screen) is where the full picture gets checked.
-      return ['balance' => round($studentSum, 2), 'flagged' => TRUE,
+      // parent CAN see, nothing else. R2: this is 'partial', not 'flagged'
+      // — a structural fact about what this parent can see, not a
+      // reconciliation mismatch; reconciliation (not this parent's screen)
+      // is where the full household picture gets checked.
+      return ['balance' => round($studentSum, 2), 'flagged' => FALSE, 'partial' => TRUE,
         'detail' => ['student_sum' => $studentSum,
           'reason' => 'partial household view — cross-check deferred to reconciliation']];
     }
@@ -77,8 +110,11 @@ class BalanceService {
     $expected = $studentSum + $parentOwn;
 
     if ($bwj === NULL) {
-      // §3.1: absent is not zero. Skip the cross-check, surface the sum, flag.
-      return ['balance' => round($studentSum, 2), 'flagged' => TRUE,
+      // §3.1: absent is not zero. Skip the cross-check, surface the sum,
+      // flag — this IS a genuine reconciliation finding (missing data on a
+      // COMPLETE household), not a by-design partial view, so 'flagged' is
+      // correct here (unlike the incomplete-household branch above).
+      return ['balance' => round($studentSum, 2), 'flagged' => TRUE, 'partial' => FALSE,
         'detail' => ['student_sum' => $studentSum, 'balance_with_jobs' => NULL,
           'reason' => 'BalanceWithJobs not returned']];
     }
@@ -88,6 +124,7 @@ class BalanceService {
     return [
       'balance' => round($display, 2),
       'flagged' => !$agrees,
+      'partial' => FALSE,
       'detail' => ['student_sum' => $studentSum, 'parent_own' => $parentOwn,
         'balance_with_jobs' => $bwj],
     ];
@@ -98,14 +135,19 @@ class BalanceService {
    * verified students in (I2), and owns the invoice-scoping rule (M3).
    *
    * @param array<array{qbo_customer_id: string, verified_student_qbo_ids: string[], complete: bool}> $households
-   * @return array{balance: float, flagged: bool, invoices: array, perHousehold: array}
-   *   'perHousehold' carries each household's own familyBalance() result
-   *   (plus its qbo_customer_id/complete flag) for the caller to log
-   *   mismatch detail per household without re-deriving anything.
+   * @return array{balance: float, flagged: bool, partial: bool, invoices: array, perHousehold: array}
+   *   'flagged': TRUE if ANY household had a genuine cross-check mismatch.
+   *   'partial': TRUE if ANY household was a by-design incomplete view. The
+   *   two are independent — a parent can have one household flagged AND a
+   *   different household partial at the same time. 'perHousehold' carries
+   *   each household's own familyBalance() result (plus its
+   *   qbo_customer_id/complete flag) for the caller to log detail per
+   *   household without re-deriving anything.
    */
   public function balanceForHouseholds(array $households): array {
     $total = 0.0;
     $flagged = FALSE;
+    $partial = FALSE;
     $verifiedStudentQboIds = [];
     $completeHouseholdQboIds = [];
     $perHousehold = [];
@@ -117,6 +159,9 @@ class BalanceService {
       if ($r['flagged']) {
         $flagged = TRUE;
       }
+      if ($r['partial']) {
+        $partial = TRUE;
+      }
       if ($hh['complete']) {
         // M3: a household's own qbo id is only ever looked up (invoices
         // included) once it has independently passed the complete-set gate
@@ -126,6 +171,10 @@ class BalanceService {
       $perHousehold[] = ['qbo_customer_id' => $hh['qbo_customer_id'], 'complete' => $hh['complete']] + $r;
     }
 
+    // R3: same dedup as familyBalance()'s own list — a student verified
+    // under more than one household entry (see FamilyResolver's own
+    // dedup, which should normally prevent this) is still never summed or
+    // invoiced twice here either.
     $verifiedStudentQboIds = array_values(array_unique($verifiedStudentQboIds));
     $invoiceScopeIds = array_merge($verifiedStudentQboIds, $completeHouseholdQboIds);
     $invoices = $invoiceScopeIds ? $this->client->getOpenInvoices($invoiceScopeIds) : [];
@@ -133,6 +182,7 @@ class BalanceService {
     return [
       'balance' => round($total, 2),
       'flagged' => $flagged,
+      'partial' => $partial,
       'invoices' => $invoices,
       'perHousehold' => $perHousehold,
     ];
