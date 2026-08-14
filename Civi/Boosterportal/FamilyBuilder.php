@@ -74,7 +74,7 @@ class FamilyBuilder {
       ->execute()->first()['id'];
 
     $studentIds = [];
-    foreach ($def['students'] as $s) {
+    foreach (($def['students'] ?? []) as $s) {
       $studentIds[] = Contact::create(FALSE)
         ->addValue('contact_type', 'Individual')
         ->addValue('first_name', $s['first_name'])
@@ -84,7 +84,7 @@ class FamilyBuilder {
     }
 
     $parentIds = [];
-    foreach ($def['parents'] as $p) {
+    foreach (($def['parents'] ?? []) as $p) {
       $create = Contact::create(FALSE)
         ->addValue('contact_type', 'Individual')
         ->addValue('first_name', $p['first_name'])
