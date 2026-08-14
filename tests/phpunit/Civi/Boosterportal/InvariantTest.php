@@ -49,6 +49,12 @@ class InvariantTest extends TestCase implements HeadlessInterface {
       // importer. Never invoked from a parent-facing request — there is no
       // route or API action that reaches FamilyBuilder::create().
       'Civi/Boosterportal/FamilyBuilder.php',
+      // Task 11: the one-time initial-load importer. Reachable only via
+      // BoosterPortal.importFamilies, which is gated by 'administer CiviCRM'
+      // at the API layer (BoosterPortal::permissions()) — console/admin-only,
+      // run once at cutover (Task 18). No parent-facing route or API action
+      // reaches Importer::run() directly.
+      'Civi/Boosterportal/Importer.php',
     ];
     // __DIR__ is .../boosterportal/tests/phpunit/Civi/Boosterportal — 4 levels
     // up is the extension root, whose Civi/ subdirectory is what we scan.

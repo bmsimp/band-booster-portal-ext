@@ -24,9 +24,17 @@ class BoosterPortal extends AbstractEntity {
       ->setCheckPermissions($checkPermissions);
   }
 
+  public static function importFamilies(bool $checkPermissions = TRUE) {
+    return (new \Civi\Api4\Action\BoosterPortal\ImportFamilies(static::getEntityName(), __FUNCTION__))
+      ->setCheckPermissions($checkPermissions);
+  }
+
   public static function permissions(): array {
     return [
       'refreshMirror' => ['administer CiviCRM'],
+      // Task 11: one-time console importer. Same gate as refreshMirror —
+      // console/admin-only, never a parent-facing action.
+      'importFamilies' => ['administer CiviCRM'],
       // getMyBalance's action class arrives in Task 12; row scoping to the
       // caller's own family happens inside the action, not via a broader
       // permission — 'access CiviCRM' is deliberately the only gate here.
