@@ -1,0 +1,7 @@
+{
+    "name": "bmsimp/boosterportal",
+    "description": "Band booster portal: QuickBooks Online integration, portal auth, and dashboard.",
+    "type": "civicrm-extension",
+    "license": "AGPL-3.0",
+    "require": {}
+}
