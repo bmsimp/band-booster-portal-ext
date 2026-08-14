@@ -38,7 +38,24 @@ class FamilyBuilder {
     self::validate($def);
 
     $result = NULL;
-    \CRM_Core_Transaction::create()->run(function($tx) use ($def, &$result) {
+    // create(TRUE) forces a genuinely NESTED transaction (a real SQL
+    // SAVEPOINT), not just "attach to whatever transaction is already open".
+    // Found via a Task 11 fast-follow test: with the default create()/FALSE,
+    // a mid-write failure (e.g. Contact::create() throwing on the second
+    // student) only calls Frame::setRollbackOnly() on the CURRENT frame —
+    // and if a caller (PHPUnit's TransactionalInterface, or any future
+    // caller that wraps an import loop in its own transaction) already has
+    // one open, that's THEIR shared frame, not a private one. The actual
+    // ROLLBACK/ROLLBACK TO SAVEPOINT only fires once that shared frame's
+    // ref-count reaches zero, so nothing is undone until the ambient
+    // transaction eventually unwinds — a single failed family would mark
+    // the WHOLE run rollback-only instead of just itself. TRUE guarantees
+    // this call is always its own atomic SAVEPOINT frame: on success
+    // nothing extra happens (Civi\Core\Transaction\Manager::createSavePoint()
+    // sets no commit statement — the writes simply remain part of whatever
+    // encloses this call); on failure only THIS family's writes are undone
+    // via ROLLBACK TO SAVEPOINT, immediately, regardless of caller context.
+    \CRM_Core_Transaction::create(TRUE)->run(function($tx) use ($def, &$result) {
       $result = self::doCreate($def);
     });
     return $result;
