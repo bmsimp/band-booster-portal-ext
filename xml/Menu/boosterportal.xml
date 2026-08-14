@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<menu>
+  <item>
+    <path>civicrm/admin/boosterportal/qbo</path>
+    <page_callback>CRM_Boosterportal_Page_QboOAuth</page_callback>
+    <title>QuickBooks Connection</title>
+    <access_arguments>administer CiviCRM</access_arguments>
+  </item>
+</menu>

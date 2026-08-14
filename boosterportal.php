@@ -5,6 +5,16 @@ declare(strict_types = 1);
 require_once 'boosterportal.civix.php';
 // phpcs:enable
 
+// This civix format (25.10.2) ships no "composer" mixin in the core mixin
+// library (only setting-php/mgd-php/theme-php/entity-types-php exist), so
+// the vendor/ autoloader for composer dependencies (quickbooks/v3-php-sdk,
+// Task 9) is not wired automatically the way it is for extension classes
+// under psr0/psr4. Load it here, guarded, since `composer install`/`require`
+// may not have run yet (e.g. a fresh checkout before CI's install step).
+if (file_exists(__DIR__ . '/vendor/autoload.php')) {
+  require_once __DIR__ . '/vendor/autoload.php';
+}
+
 use CRM_Boosterportal_ExtensionUtil as E;
 
 /**
