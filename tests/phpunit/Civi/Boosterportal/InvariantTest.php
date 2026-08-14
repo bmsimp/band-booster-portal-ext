@@ -55,6 +55,51 @@ class InvariantTest extends TestCase implements HeadlessInterface {
       // run once at cutover (Task 18). No parent-facing route or API action
       // reaches Importer::run() directly.
       'Civi/Boosterportal/Importer.php',
+      // Task 12: THE FIRST PARENT-REACHABLE ALLOWLIST ENTRY — every prior
+      // entry above is test/console-only and never sits behind a
+      // parent-permissioned route. This one does: FamilyResolver is called
+      // directly from Civi/Api4/Action/BoosterPortal/GetMyBalance.php, whose
+      // permission is 'access CiviCRM' (BoosterPortal::permissions()) — i.e.
+      // any logged-in parent can trigger this code path. The containment
+      // argument this allowlist entry rests on:
+      //
+      //  1. The ONE checkPermissions FALSE call in this file is
+      //     FamilyResolver::billingHouseholdOf() — a Contact::get(FALSE)
+      //     reading Households. This is intentional and matches the Task 7
+      //     amendment: parents cannot see Household rows at all under this
+      //     extension's ACL model (boosterportal.php's aclGroup hook grants
+      //     only the Booster_QBO_Student custom group; the aclWhereClause
+      //     hook only ever grants contact_id_b of a Portal_Parent_of edge,
+      //     which is never a Household) — so there is no ACL-checked way to
+      //     do this lookup at all, by design, not by oversight.
+      //  2. billingHouseholdOf()'s ONLY input is $studentIds, an int[]. It
+      //     is NEVER called with anything from request/API input — the sole
+      //     caller (GetMyBalance::_run()) always sources $studentIds from
+      //     FamilyResolver::studentsOf()'s OWN return value for the SAME
+      //     request, and studentsOf() itself IS ACL-checked (see below), so
+      //     by construction the household lookup can only ever be scoped to
+      //     ids the parent was already independently verified to see.
+      //  3. studentsOf() is the OTHER method in this file, and it does NOT
+      //     appear in the offender list above — it contains no
+      //     checkPermissions=FALSE at all. It derives CANDIDATE student ids
+      //     via plain SQL (mirroring boosterportal_civicrm_aclWhereClause()'s
+      //     own subquery), then verifies every one of them with a REAL
+      //     Contact::get(TRUE) call before returning anything — see the
+      //     "why not the plan's literal join" comment on the class itself
+      //     for why that two-layer shape exists (Contact::get(TRUE) joined
+      //     directly to Relationship returns zero rows for a portal parent,
+      //     empirically verified against the AclLeakTest fixture: the join
+      //     drags in Relationship's OWN default ACL clause, which requires
+      //     the parent's own contact row to be independently visible, and
+      //     it isn't). studentsOf() also throws if called for any contact
+      //     other than the currently logged-in one, closing off the one
+      //     remaining way this could be aimed at someone else's id.
+      //  4. Guarded by AclLeakTest::testGetMyBalanceSeesOnlyOwnStudents()
+      //     and ::testGetMyBalanceHouseholdLookupScopedToOwnStudents(),
+      //     which run both methods against a real two-family fixture and
+      //     assert family A's derivation never contains anything of family
+      //     B — including through the FALSE call this entry allowlists.
+      'Civi/Boosterportal/FamilyResolver.php',
     ];
     // __DIR__ is .../boosterportal/tests/phpunit/Civi/Boosterportal — 4 levels
     // up is the extension root, whose Civi/ subdirectory is what we scan.

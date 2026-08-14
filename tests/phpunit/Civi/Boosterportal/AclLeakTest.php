@@ -177,4 +177,45 @@ class AclLeakTest extends TestCase implements HeadlessInterface, TransactionalIn
       "Sanity: {$runCount} of {$displays->count()} displays actually ran under checkPermissions ({$skippedCount} skipped as UnauthorizedException).");
   }
 
+  /**
+   * Task 12 Step 6 (adapted): the plan's literal derivation —
+   * Contact::get(TRUE)->addJoin('Relationship AS rel', ...) — was tried
+   * empirically against this exact fixture and returns ZERO rows, even for
+   * parent A's own student. Root cause: the join pulls in Relationship's
+   * OWN default ACL clause (CRM_Core_DAO::addSelectWhereClause()), which
+   * requires BOTH contact_id_a and contact_id_b to independently pass the
+   * Contact ACL check — and a parent has no grant to see their own contact
+   * row (testRelationshipsOfOtherFamilyAreInvisible() above documents the
+   * same effect: Relationship::get(TRUE) is always [], even for family A).
+   *
+   * FamilyResolver::studentsOf() instead reads candidate student ids via
+   * direct SQL mirroring boosterportal_civicrm_aclWhereClause()'s own
+   * subquery, then verifies them via a real Contact::get(TRUE) call (belt
+   * and braces — only the intersection is trusted). This test is that
+   * derivation's headless, QBO-free coverage: assert it returns exactly
+   * parent A's own student and nothing of family B.
+   */
+  public function testGetMyBalanceSeesOnlyOwnStudents(): void {
+    $students = FamilyResolver::studentsOf($this->famA['parent_ids'][0]);
+    $qboIds = array_column($students, 'qbo_subcustomer_id');
+    $this->assertSame(['202'], $qboIds, 'FamilyResolver::studentsOf() must return exactly family A\'s own student qbo id, nothing of family B');
+  }
+
+  /**
+   * The billing household lookup (FamilyResolver::billingHouseholdOf()) runs
+   * with checkPermissions FALSE — parents cannot see Household rows at all
+   * (Task 7 amendment) — so it is keyed ONLY off ACL-verified student ids
+   * from testGetMyBalanceSeesOnlyOwnStudents() above, never off request
+   * input. Confirm it lands on family A's household and never family B's.
+   */
+  public function testGetMyBalanceHouseholdLookupScopedToOwnStudents(): void {
+    $students = FamilyResolver::studentsOf($this->famA['parent_ids'][0]);
+    $studentIds = array_column($students, 'id');
+    $household = FamilyResolver::billingHouseholdOf($studentIds);
+    $this->assertNotNull($household, 'Family A billing household must be found');
+    $this->assertSame('201', $household['qbo_customer_id']);
+    $this->assertNotSame($this->famBQboCustomerId, $household['qbo_customer_id'],
+      'Household lookup scoped to family A students must never resolve to family B\'s household');
+  }
+
 }
