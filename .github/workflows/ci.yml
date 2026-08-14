@@ -13,7 +13,11 @@ jobs:
           if [ -n "$(git status --porcelain)" ]; then echo "extension working tree dirty — commit or stash before CI can run"; exit 1; fi
           git fetch origin
           git checkout --detach ${{ github.sha }}
-          trap 'git checkout main >/dev/null 2>&1; git pull --ff-only >/dev/null 2>&1' EXIT
+          # cd back into $EXT explicitly on exit: by the time this trap fires the
+          # script has cd'd elsewhere (into $SITE, then the site repo root for
+          # check-invariants.sh), so without this the checkout/pull below would
+          # silently run against the wrong repo and leave $EXT detached.
+          trap 'cd "$EXT" && git checkout main >/dev/null 2>&1 && git pull --ff-only >/dev/null 2>&1' EXIT
           cd $SITE
           if ! ddev describe >/dev/null 2>&1; then
             echo "ddev project not running — starting it"
