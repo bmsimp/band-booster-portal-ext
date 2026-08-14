@@ -1,0 +1,23 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  headless-tests:
+    runs-on: [self-hosted, linux, ddev]
+    steps:
+      - name: Run suite at pushed SHA in the site's extension checkout
+        run: |
+          export PATH=$HOME/.local/bin:$PATH
+          SITE=$HOME/projects/band-booster-portal/site
+          EXT=$SITE/web/sites/default/files/civicrm/ext/boosterportal
+          cd $EXT
+          if [ -n "$(git status --porcelain)" ]; then echo "extension working tree dirty — commit or stash before CI can run"; exit 1; fi
+          git fetch origin
+          git checkout --detach ${{ github.sha }}
+          trap 'git checkout main >/dev/null 2>&1; git pull --ff-only >/dev/null 2>&1' EXIT
+          cd $SITE
+          if ! ddev describe >/dev/null 2>&1; then
+            echo "ddev project not running — starting it"
+            ddev start
+          fi
+          ddev exec bash -c 'cd web/sites/default/files/civicrm/ext/boosterportal && /var/www/html/vendor/bin/phpunit tests/phpunit'
+          cd $HOME/projects/band-booster-portal && ./scripts/check-invariants.sh
