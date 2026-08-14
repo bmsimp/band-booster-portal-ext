@@ -20,11 +20,18 @@ class AclLeakTest extends TestCase implements HeadlessInterface, TransactionalIn
   private array $famB;
 
   /**
-   * A per-run-unique string embedded in family B's email, used by
-   * testEveryDashboardSearchDisplayIsLeakFree() as a leak signal that cannot
-   * collide with an unrelated numeric id (security review I5).
+   * A per-run-unique string used to derive every family-B value that
+   * testEveryDashboardSearchDisplayIsLeakFree() checks for as a leak signal.
+   * Security review N4: fixed short strings like '301'/'302'/'Beta' are
+   * collision-prone substrings (numeric ones can match ids/weights/timestamps
+   * elsewhere in a serialized result; even a word like 'Beta' could turn up in
+   * unrelated UI text) — every one of family B's distinguishing values below
+   * is derived from this instead, so there are no fixed-string sentinels left.
    */
   private string $sentinel;
+  private string $famBQboCustomerId;
+  private string $famBQboSubcustomerId;
+  private string $famBLastName;
 
   public function setUpHeadless(): CiviEnvBuilder {
     return Test::headless()->installMe(__DIR__)->apply();
@@ -33,15 +40,19 @@ class AclLeakTest extends TestCase implements HeadlessInterface, TransactionalIn
   public function setUp(): void {
     parent::setUp();
     $this->sentinel = bin2hex(random_bytes(8));
+    $this->famBQboCustomerId = 'Q' . $this->sentinel . '0';
+    $this->famBQboSubcustomerId = 'Q' . $this->sentinel . '1';
+    $this->famBLastName = 'Zz' . $this->sentinel;
+
     $this->famA = FamilyBuilder::create([
       'household' => ['name' => 'Alpha Family', 'qbo_customer_id' => '201'],
       'parents' => [['first_name' => 'Ana', 'last_name' => 'Alpha', 'email' => 'ana@example.org']],
       'students' => [['first_name' => 'Avery', 'last_name' => 'Alpha', 'qbo_subcustomer_id' => '202']],
     ]);
     $this->famB = FamilyBuilder::create([
-      'household' => ['name' => 'Beta Family', 'qbo_customer_id' => '301'],
-      'parents' => [['first_name' => 'Bo', 'last_name' => 'Beta', 'email' => "bo-{$this->sentinel}@example.org"]],
-      'students' => [['first_name' => 'Blake', 'last_name' => 'Beta', 'qbo_subcustomer_id' => '302']],
+      'household' => ['name' => 'Beta Family', 'qbo_customer_id' => $this->famBQboCustomerId],
+      'parents' => [['first_name' => 'Bo', 'last_name' => $this->famBLastName, 'email' => "bo-{$this->sentinel}@example.org"]],
+      'students' => [['first_name' => 'Blake', 'last_name' => $this->famBLastName, 'qbo_subcustomer_id' => $this->famBQboSubcustomerId]],
     ]);
 
     // Log in as parent A with ONLY the parent-tier permission set (Task 4).
@@ -82,7 +93,7 @@ class AclLeakTest extends TestCase implements HeadlessInterface, TransactionalIn
       ->addSelect('id', 'Booster_QBO_Student.qbo_subcustomer_id')
       ->addWhere('Booster_QBO_Student.qbo_subcustomer_id', 'IS NOT NULL')
       ->execute()->column('Booster_QBO_Student.qbo_subcustomer_id');
-    $this->assertNotContains('302', $rows, 'Family B sub-customer id leaked');
+    $this->assertNotContains($this->famBQboSubcustomerId, $rows, 'Family B sub-customer id leaked');
     $this->assertContains('202', $rows, 'Own student QBO id missing — test vacuous');
   }
 
@@ -112,10 +123,11 @@ class AclLeakTest extends TestCase implements HeadlessInterface, TransactionalIn
     // produced a false positive when an unrelated small integer (e.g. an
     // OptionValue id from a core admin display) happened to equal a family-B
     // contact id — a nondeterministic failure mode unrelated to any actual
-    // leak. A per-run-random email plus the fixture's own distinctive QBO ids
-    // and surname can't collide with an arbitrary numeric id from another
-    // entity (security review I5).
-    $sentinels = [$this->sentinel, '301', '302', 'Beta'];
+    // leak. Every value below is entirely derived from $this->sentinel
+    // (security review N4): no fixed short strings remain, so nothing here
+    // can collide with an unrelated id, weight, timestamp, or ordinary word
+    // that happens to appear in some other display's output.
+    $sentinels = [$this->sentinel, $this->famBQboCustomerId, $this->famBQboSubcustomerId, $this->famBLastName];
 
     $displays = \Civi\Api4\SearchDisplay::get(FALSE)
       ->addSelect('name', 'saved_search_id.name')
@@ -147,6 +159,15 @@ class AclLeakTest extends TestCase implements HeadlessInterface, TransactionalIn
           "Display {$display['name']} leaks family B sentinel value '{$sentinel}'");
       }
     }
+
+    // N4: print the coverage unconditionally, not just on failure, so CI
+    // output shows how much of the sweep actually exercised checkPermissions
+    // logic even on a green run.
+    fwrite(STDOUT, sprintf(
+      "[AclLeakTest] SearchDisplay sweep: %d run, %d skipped as UnauthorizedException (of %d displays total)\n",
+      $runCount, $skippedCount, $displays->count()
+    ));
+
     // TODO(Task 17): once the dashboard's own displays exist, tighten this to
     // require $runCount > 0. Today 0 is legitimate: the only displays present
     // in a headless install this early are CiviCRM's own admin screens, and a

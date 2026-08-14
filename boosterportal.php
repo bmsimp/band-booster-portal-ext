@@ -55,6 +55,38 @@ function _boosterportal_portal_parent_relationship_type_id(): ?int {
 }
 
 /**
+ * Relationship type ids allowed to carry a non-NONE is_permission_a_b value,
+ * memoized for the life of the request:
+ *  - Portal_Parent_of: this extension's own portal ACL edge.
+ *  - 'Employee of': CiviCRM core itself creates a permissioned Employee-of
+ *    relationship in the "contribute on behalf of an organisation" flow
+ *    (CRM_Contribute_Form_Contribution_Confirm, via Api4 Relationship::create()
+ *    with is_permission_a_b:name = 'View and update'), wrapped in a try/catch
+ *    that only tolerates a "Duplicate Relationship" CRM_Core_Exception and
+ *    rethrows anything else — including one thrown by hook_civicrm_pre()
+ *    below. Without this exemption the guard fatals the contribution
+ *    confirmation page AFTER payment has already been captured (security
+ *    review N1). CRM_Contact_BAO_RelationshipType::getEmployeeRelationshipTypeID()
+ *    itself throws if the 'Employee of' type has been deleted, so the lookup
+ *    is wrapped defensively and simply omitted from the allow-list in that case.
+ *
+ * @return int[]
+ */
+function _boosterportal_allowed_permissioned_relationship_type_ids(): array {
+  if (!isset(Civi::$statics['boosterportal']['allowed_permissioned_relationship_type_ids'])) {
+    $ids = [_boosterportal_portal_parent_relationship_type_id()];
+    try {
+      $ids[] = CRM_Contact_BAO_RelationshipType::getEmployeeRelationshipTypeID();
+    }
+    catch (CRM_Core_Exception $e) {
+      // 'Employee of' relationship type missing/deleted — nothing to exempt.
+    }
+    Civi::$statics['boosterportal']['allowed_permissioned_relationship_type_ids'] = array_filter($ids);
+  }
+  return Civi::$statics['boosterportal']['allowed_permissioned_relationship_type_ids'];
+}
+
+/**
  * Implements hook_civicrm_aclWhereClause().
  *
  * §3.2 requires the permissioned Portal_Parent_of relationship (is_permission_a_b)
@@ -87,16 +119,41 @@ function _boosterportal_portal_parent_relationship_type_id(): ?int {
  *  - $type is an explicit whitelist (VIEW or EDIT); anything else returns without
  *    adding a clause and falls through to core's existing deny-all.
  *  - Relationships must be currently active by date (I3): a disabled/expired edge
- *    must not grant access. The scheduled job "Disable expired relationships"
- *    (Job.disable_expired_relationships) flips is_active off once end_date has
- *    passed, but this hook does not rely on that job alone — it also filters on
- *    start_date/end_date directly, since the job only runs periodically and the
- *    window between expiry and the next cron run must not be a hole. THIS JOB
- *    MUST STAY ENABLED IN PRODUCTION; this hook's date filter is a second layer,
- *    not a replacement for it.
+ *    must not grant access. IMPORTANT (N5 correction — the previous version of
+ *    this comment overclaimed): CURDATE() here is evaluated at ACL CACHE BUILD
+ *    time (i.e. whenever CRM_Contact_BAO_Contact_Permission::cache() actually
+ *    runs the build SQL for a given user), not at every read — bulk queries
+ *    after that just JOIN against the already-populated civicrm_acl_contact_cache
+ *    snapshot table and never re-run this SQL. So this filter correctly excludes
+ *    an expired-but-still-is_active=1 relationship in any FRESH cache build (the
+ *    first build for a user, or any rebuild triggered by hook_civicrm_post()
+ *    below on a relationship write) — it does NOT retroactively fix an
+ *    already-stale cache row from before expiry. The real bound on how long a
+ *    stale row can persist is the "Disable expired relationships" scheduled job
+ *    (Job.disable_expired_relationships, enabled on this dev site), which flips
+ *    is_active off once end_date passes and, via hook_civicrm_post() below,
+ *    invalidates the affected cache rows so the next read rebuilds fresh. THIS
+ *    JOB MUST STAY ENABLED IN PRODUCTION — this date filter narrows the window
+ *    before that job next runs, it is not a substitute for it. (Checked for a
+ *    core job that rebuilds/flushes civicrm_acl_contact_cache itself on a
+ *    schedule: Job.acl_cache_flush exists but calls CRM_ACL_BAO_Cache::resetCache(),
+ *    which only touches the unrelated civicrm_acl_cache group-ACL table — not
+ *    civicrm_acl_contact_cache — so it is not relevant here and was left disabled.)
  *  - See hook_civicrm_post() below for cache invalidation on relationship writes,
- *    and hook_civicrm_pre() for the guard against setting permission bits on any
- *    relationship type other than Portal_Parent_of.
+ *    hook_civicrm_pre() for the API-level guard against setting permission bits
+ *    on any disallowed relationship type or direction, and
+ *    hook_civicrm_validateForm() for the same rule as an inline UI form error.
+ *  - $tables/$whereTables are deliberately left untouched (empty) — I6: a
+ *    non-empty $whereTables is exactly what CRM_Core_Permission::giveMeAllACLs()
+ *    treats as "this hook is granting something", so leaving them empty makes
+ *    giveMeAllACLs() correctly return FALSE for a portal parent even though
+ *    $whereClause itself grants some rows (fail-closed for any caller that only
+ *    checks giveMeAllACLs() rather than actually running the query). Populating
+ *    them would also inject our relationship subquery as an extra JOIN into
+ *    unrelated queries, since $tables/$whereTables are interpreted as
+ *    query-wide join requirements, not something scoped to $whereClause; if a
+ *    specific screen misbehaves because of that omission, fix that screen, not
+ *    this hook.
  *
  * @link https://docs.civicrm.org/dev/en/latest/hooks/hook_civicrm_aclWhereClause/
  */
@@ -196,12 +253,21 @@ function boosterportal_civicrm_aclGroup(int $type, ?int $contactID, string $tabl
  * CRM_Contact_BAO_Contact_Permission::cache() so a subsequent read within this
  * same request rebuilds rather than trusting a now-stale flag.
  *
+ * N6: parameters are deliberately untyped (no ?int/?string). This hook fires
+ * for every entity write, system-wide, from every extension — a strict scalar
+ * type here would TypeError on the first non-conforming value any weak-mode
+ * core caller or other extension ever passes for ANY entity, which is a fatal
+ * error inside an ACL-adjacent hook rather than a recoverable one. Check the
+ * entity name first (loose, before touching $objectId at all), then cast
+ * defensively only once we know we are looking at a Relationship.
+ *
  * @link https://docs.civicrm.org/dev/en/latest/hooks/hook_civicrm_post/
  */
-function boosterportal_civicrm_post(string $op, ?string $objectName, ?int $objectId, &$objectRef): void {
+function boosterportal_civicrm_post($op, $objectName, $objectId, &$objectRef): void {
   if ($objectName !== 'Relationship') {
     return;
   }
+  $objectId = $objectId !== NULL ? (int) $objectId : NULL;
 
   $contactIds = [];
   if ($objectRef && isset($objectRef->contact_id_a, $objectRef->contact_id_b)) {
@@ -233,30 +299,50 @@ function boosterportal_civicrm_post(string $op, ?string $objectName, ?int $objec
  * Implements hook_civicrm_pre().
  *
  * Belt-and-braces guard (security review, following C2): a permission bit
- * (is_permission_a_b / is_permission_b_a) ticked on any relationship type other
- * than Portal_Parent_of would be honoured by CiviCRM core's own single-record
+ * ticked on any relationship type other than Portal_Parent_of (or core's own
+ * Employee-of on-behalf-of-organisation flow, N1 — see
+ * _boosterportal_allowed_permissioned_relationship_type_ids()) would be
+ * honoured by CiviCRM core's own single-record
  * CRM_Contact_BAO_Contact_Permission::allow()/allowList()/relationshipList()
  * path regardless of anything in this extension — those are core mechanisms,
- * not something the aclWhereClause scoping above can protect. Refuse the write
- * outright instead, the same class of mistake the security review demonstrated
- * with a stock 'Child of' relationship type.
+ * not something the aclWhereClause scoping above can protect. Refuse the
+ * write outright instead, the same class of mistake the security review
+ * demonstrated with a stock 'Child of' relationship type.
+ *
+ * N2: is_permission_b_a is rejected outright on EVERY relationship type,
+ * including Portal_Parent_of itself. The portal edge is directional by design
+ * (§4.4) — parent (a) may view student (b), never the reverse — and
+ * CiviCRM core's relationshipList()/allow() honour is_permission_b_a exactly
+ * the same way as is_permission_a_b, just in the opposite direction, so
+ * setting it on Portal_Parent_of would let a student gain a direct-id view of
+ * their own parent. The on-behalf-of core flow (N1) only ever sets
+ * is_permission_a_b, so this is not expected to affect it (verified below).
+ *
+ * hook_civicrm_validateForm() below applies the same rule as an inline form
+ * error for the one UI path that can reach it (CRM_Contact_Form_Relationship);
+ * this hook remains the API-level backstop for every other caller.
+ *
+ * N6: parameters are deliberately untyped (no ?int/?string) — see the same
+ * note on hook_civicrm_post() above; the reasoning is identical.
  *
  * @link https://docs.civicrm.org/dev/en/latest/hooks/hook_civicrm_pre/
  * @throws \CRM_Core_Exception
  */
-function boosterportal_civicrm_pre(string $op, ?string $objectName, ?int $id, &$params): void {
+function boosterportal_civicrm_pre($op, $objectName, $id, &$params): void {
   if ($objectName !== 'Relationship' || !in_array($op, ['create', 'edit'], TRUE)) {
     return;
   }
+  $id = $id !== NULL ? (int) $id : NULL;
 
-  $settingPermission = FALSE;
-  foreach (['is_permission_a_b', 'is_permission_b_a'] as $field) {
-    if (!empty($params[$field]) && (int) $params[$field] !== CRM_Contact_BAO_Relationship::NONE) {
-      $settingPermission = TRUE;
-      break;
-    }
+  if (!empty($params['is_permission_b_a']) && (int) $params['is_permission_b_a'] !== CRM_Contact_BAO_Relationship::NONE) {
+    throw new CRM_Core_Exception(
+      'boosterportal: refusing to set is_permission_b_a to a non-NONE value on any relationship. The portal ' .
+      'ACL edge is directional (parent views student, never the reverse) — this direction is never used and ' .
+      'must stay "None".'
+    );
   }
-  if (!$settingPermission) {
+
+  if (empty($params['is_permission_a_b']) || (int) $params['is_permission_a_b'] === CRM_Contact_BAO_Relationship::NONE) {
     return;
   }
 
@@ -268,13 +354,58 @@ function boosterportal_civicrm_pre(string $op, ?string $objectName, ?int $id, &$
     );
   }
 
-  $portalTypeId = _boosterportal_portal_parent_relationship_type_id();
-  if (!$typeId || (int) $typeId !== $portalTypeId) {
+  $allowedTypeIds = _boosterportal_allowed_permissioned_relationship_type_ids();
+  if (!$typeId || !in_array((int) $typeId, $allowedTypeIds, TRUE)) {
     throw new CRM_Core_Exception(
-      'boosterportal: refusing to set a permissioned relationship (is_permission_a_b/is_permission_b_a) ' .
-      "on relationship type id " . var_export($typeId, TRUE) . '. Permissioned relationships are reserved ' .
-      'for Portal_Parent_of — this protects the parent-portal ACL model from being silently extended to an ' .
-      'unrelated relationship type (e.g. a mis-ticked permission box on a stock type like "Child of").'
+      'boosterportal: refusing to set is_permission_a_b on relationship type id ' . var_export($typeId, TRUE) . '. ' .
+      'Permissioned relationships are reserved for Portal_Parent_of (and CiviCRM core\'s own Employee-of ' .
+      'on-behalf-of-organisation flow) — this protects the parent-portal ACL model from being silently ' .
+      'extended to an unrelated relationship type (e.g. a mis-ticked permission box on a stock type like "Child of").'
     );
+  }
+}
+
+/**
+ * Implements hook_civicrm_validateForm().
+ *
+ * N7: UI-level front door onto the same rule as the hook_civicrm_pre() guard
+ * above, for the one form that can reach it interactively:
+ * CRM_Contact_Form_Relationship. Without this, ticking a permission dropdown
+ * on the wrong relationship type in the UI hits the pre-hook's
+ * CRM_Core_Exception at save time — a white-screen fatal — instead of an
+ * inline field error. The pre hook stays in place regardless: this is a
+ * friendlier front door, not a replacement for the API-level backstop
+ * (Relationship writes from anywhere other than this one form still go
+ * through hook_civicrm_pre() only).
+ *
+ * $fields['relationship_type_id'] arrives here as CiviCRM's composite select
+ * value ("<relationship_type_id>_a_b" or "..._b_a" — see
+ * CRM_Contact_Form_Relationship::buildQuickForm()/postProcess(), which builds
+ * and then parses the same format), not a bare integer.
+ *
+ * @link https://docs.civicrm.org/dev/en/latest/hooks/hook_civicrm_validateForm/
+ */
+function boosterportal_civicrm_validateForm($formName, &$fields, &$files, &$form, &$errors): void {
+  if ($formName !== 'CRM_Contact_Form_Relationship') {
+    return;
+  }
+
+  $permABSet = !empty($fields['is_permission_a_b']) && (int) $fields['is_permission_a_b'] !== CRM_Contact_BAO_Relationship::NONE;
+  $permBASet = !empty($fields['is_permission_b_a']) && (int) $fields['is_permission_b_a'] !== CRM_Contact_BAO_Relationship::NONE;
+  if (!$permABSet && !$permBASet) {
+    return;
+  }
+
+  if ($permBASet) {
+    $errors['is_permission_b_a'] = ts('The portal ACL edge is directional and never uses this direction. Set this back to "None".');
+  }
+
+  if ($permABSet) {
+    $typeIdParts = explode('_', (string) ($fields['relationship_type_id'] ?? ''));
+    $typeId = (int) ($typeIdParts[0] ?? 0);
+    $allowedTypeIds = _boosterportal_allowed_permissioned_relationship_type_ids();
+    if (!$typeId || !in_array($typeId, $allowedTypeIds, TRUE)) {
+      $errors['is_permission_a_b'] = ts('Permissioned relationships (View/Edit access) are reserved for the "Portal Parent of" relationship type. Choose "None" here, or use "Portal Parent of" instead.');
+    }
   }
 }
