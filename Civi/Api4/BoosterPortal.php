@@ -34,6 +34,18 @@ class BoosterPortal extends AbstractEntity {
       ->setCheckPermissions($checkPermissions);
   }
 
+  /** Task 13 (§6): nightly reconciliation — checks 1,2,5-18. */
+  public static function runRecon(bool $checkPermissions = TRUE) {
+    return (new \Civi\Api4\Action\BoosterPortal\RunRecon(static::getEntityName(), __FUNCTION__))
+      ->setCheckPermissions($checkPermissions);
+  }
+
+  /** Task 13 (§6): hourly reconciliation — checks 3, 4, 4b. */
+  public static function runReconHourly(bool $checkPermissions = TRUE) {
+    return (new \Civi\Api4\Action\BoosterPortal\RunReconHourly(static::getEntityName(), __FUNCTION__))
+      ->setCheckPermissions($checkPermissions);
+  }
+
   public static function permissions(): array {
     return [
       'refreshMirror' => ['administer CiviCRM'],
@@ -46,6 +58,10 @@ class BoosterPortal extends AbstractEntity {
       // deliberately the only gate here, same as any other parent-facing
       // action. AclLeakTest guards the scoping.
       'getMyBalance' => ['access CiviCRM'],
+      // Task 13: cron/admin-only, same gate as refreshMirror — neither is
+      // ever reachable from a parent-facing route.
+      'runRecon' => ['administer CiviCRM'],
+      'runReconHourly' => ['administer CiviCRM'],
     ];
   }
 

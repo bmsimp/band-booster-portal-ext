@@ -140,6 +140,24 @@ class InvariantTest extends TestCase implements HeadlessInterface {
       //     so the same student's balance is never double-counted across
       //     two households either.
       'Civi/Boosterportal/FamilyResolver.php',
+      // Task 13: the reconciliation report. checkPermissions=FALSE appears
+      // once, in runHourly()'s check 3 — SearchDisplay::get(FALSE) — which
+      // deliberately sweeps EVERY SearchDisplay in the system regardless of
+      // the calling user's own permissions (this is the same call
+      // InvariantTest::testNoAclBypassAnywhere makes, just persisted as an
+      // emailable finding here instead of a CI-only assertion; a
+      // permission-scoped get() would silently miss displays the caller
+      // itself can't see, which is exactly backwards for a system-wide
+      // invariant check). The rest of Recon.php runs raw
+      // CRM_Core_DAO::executeQuery() SQL, which carries no ACL checking of
+      // its own by construction — that's fine here, same as Mirror.php and
+      // Importer.php, because Recon.php is never reached from a
+      // parent-facing route. Its only entry points are
+      // Civi/Api4/Action/BoosterPortal/RunRecon.php and RunReconHourly.php,
+      // dispatched via BoosterPortal.runRecon / BoosterPortal.runReconHourly,
+      // both gated 'administer CiviCRM' in BoosterPortal::permissions() —
+      // cron/admin-only, identical shape to refreshMirror (Task 10).
+      'Civi/Boosterportal/Recon.php',
     ];
     // __DIR__ is .../boosterportal/tests/phpunit/Civi/Boosterportal — 4 levels
     // up is the extension root, whose Civi/ subdirectory is what we scan.

@@ -95,4 +95,38 @@ final class CRM_Boosterportal_Upgrader extends \CRM_Extension_Upgrader_Base {
     return TRUE;
   }
 
+  /**
+   * Creates boosterportal_recon_finding (§6, Task 13) on a site that was
+   * already installed before the reconciliation report existed —
+   * sql/install.sql now declares it on a fresh install, same reasoning as
+   * upgrade_1001() above: onPostInstall() jumps a fresh install straight to
+   * the latest revision, so this step only ever fires against the live dev
+   * site, which was installed before this table existed.
+   *
+   * CREATE TABLE IF NOT EXISTS makes this naturally idempotent — no
+   * information_schema pre-check needed the way upgrade_1001()'s ADD UNIQUE
+   * KEY required one (ALTER TABLE ADD KEY isn't itself idempotent; CREATE
+   * TABLE IF NOT EXISTS is).
+   *
+   * @return TRUE on success
+   * @throws CRM_Core_Exception
+   */
+  public function upgrade_1002(): bool {
+    $this->ctx->log->info('Applying update 1002: boosterportal_recon_finding table');
+
+    CRM_Core_DAO::executeQuery(
+      "CREATE TABLE IF NOT EXISTS boosterportal_recon_finding (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        check_num INT NOT NULL,
+        severity ENUM('CRITICAL','ERROR','WARNING') NOT NULL,
+        title VARCHAR(255) NOT NULL,
+        detail TEXT NOT NULL,
+        found_at DATETIME NOT NULL,
+        INDEX idx_severity (severity),
+        INDEX idx_check (check_num)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+    return TRUE;
+  }
+
 }

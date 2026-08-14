@@ -53,3 +53,22 @@ CREATE TABLE IF NOT EXISTS boosterportal_login_token (
   UNIQUE KEY uq_token (token_hash),
   INDEX idx_email_created (email, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Reconciliation findings (§6, Task 13). Recomputed on every run: Recon::store()
+-- deletes and rewrites the rows for whichever check_num values that run
+-- produced (see its docblock), so this table always reflects the LAST run's
+-- findings, not an ever-growing history. IF NOT EXISTS for the same reason as
+-- the three tables above — scripts/setup-test-db.sh's mysqldump reseed of the
+-- headless test DB already carries this table once it exists on the live 'db'
+-- database too; schema changes after that point are upgrade_NNNN() steps
+-- (CRM_Boosterportal_Upgrader::upgrade_1002()), same convention as uq_day above.
+CREATE TABLE IF NOT EXISTS boosterportal_recon_finding (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  check_num INT NOT NULL,
+  severity ENUM('CRITICAL','ERROR','WARNING') NOT NULL,
+  title VARCHAR(255) NOT NULL,
+  detail TEXT NOT NULL,
+  found_at DATETIME NOT NULL,
+  INDEX idx_severity (severity),
+  INDEX idx_check (check_num)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

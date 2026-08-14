@@ -9,4 +9,8 @@ return [
   'boosterportal_qbo_client_secret' => $base + ['name' => 'boosterportal_qbo_client_secret', 'type' => 'String', 'default' => '', 'title' => 'QBO OAuth client secret'],
   'boosterportal_qbo_realm_id' => $base + ['name' => 'boosterportal_qbo_realm_id', 'type' => 'String', 'default' => '', 'title' => 'QBO company (realm) id'],
   'boosterportal_qbo_refresh_token' => $base + ['name' => 'boosterportal_qbo_refresh_token', 'type' => 'String', 'default' => '', 'title' => 'QBO OAuth refresh token'],
+  // Task 13 (§6): where CRITICAL reconciliation findings get emailed.
+  // Empty by default — Recon::emailCritical() skips sending silently when
+  // this is unset, rather than erroring or emailing nobody.
+  'boosterportal_webmaster_email' => $base + ['name' => 'boosterportal_webmaster_email', 'type' => 'String', 'default' => '', 'title' => 'Webmaster email (CRITICAL reconciliation alerts)'],
 ];
