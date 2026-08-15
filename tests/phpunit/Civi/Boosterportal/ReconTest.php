@@ -441,7 +441,9 @@ class ReconTest extends TestCase implements HeadlessInterface, TransactionalInte
   // time it opened CiviCRM, and it will never have a student.
   // -------------------------------------------------------------------
 
-  private const STAFF_ROLES = ['administrator', 'editor', 'author', 'contributor', 'booster_volunteer'];
+  // The same list as the boosterportal_non_portal_roles setting's default.
+  private const STAFF_ROLES = ['administrator', 'editor', 'author', 'contributor',
+    'booster_board', 'booster_volunteer', 'booster_webmaster'];
 
   public function testCheckNineIgnoresStaffAccounts(): void {
     foreach (self::STAFF_ROLES as $role) {

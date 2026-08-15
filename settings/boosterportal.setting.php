@@ -31,5 +31,14 @@ return [
   // A setting rather than a constant because the granular admin-side roles are
   // still to come: adding one should be an edit here, not a code change by
   // whoever happens to be maintaining Recon.php that year.
-  'boosterportal_non_portal_roles' => $base + ['name' => 'boosterportal_non_portal_roles', 'type' => 'Array', 'default' => ['administrator', 'editor', 'author', 'contributor', 'booster_volunteer'], 'title' => 'CMS roles that are not band parents (excluded from reconciliation check 9)'],
+  //
+  // The three booster_* roles are the WordPress side of the Entra groups that
+  // drive board sign-in (Task 14): Portal - Board -> booster_board,
+  // Portal - Volunteer -> booster_volunteer, Portal - Webmaster ->
+  // booster_webmaster. They are listed here BEFORE the SSO work lands, on
+  // purpose. The day those accounts first sign in they acquire a
+  // civicrm_uf_match row, have no students, and would otherwise each be
+  // reported as a broken parent -- twelve permanent false alarms on the first
+  // day of the thing this check exists to keep trustworthy.
+  'boosterportal_non_portal_roles' => $base + ['name' => 'boosterportal_non_portal_roles', 'type' => 'Array', 'default' => ['administrator', 'editor', 'author', 'contributor', 'booster_board', 'booster_volunteer', 'booster_webmaster'], 'title' => 'CMS roles that are not band parents (excluded from reconciliation check 9)'],
 ];
