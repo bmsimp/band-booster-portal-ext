@@ -25,6 +25,13 @@
 // https:// URL before it's ever used as an href — see safeHttpsUrl() below —
 // and simply dropped (balance still shown, no Pay link for that invoice) if
 // it fails.
+// THEMING (public-face design §4.3): the class names below —
+// booster-balance, -amount, -figure, -pay, -note, -loading, -empty, -error,
+// -nolinks — are the ONLY hooks the site theme has on this widget
+// (band-booster-portal: site/web/themes/custom/fznband/css/portal.css).
+// Renaming one silently unstyles part of the parent dashboard in the other
+// repository, so tests/js/booster-balance.test.js asserts on them. Adding a
+// class here is cheap; renaming one is a two-repository change.
 class BoosterBalance extends HTMLElement {
   // Overridable per-instance/class for testing (tests/js/) — production
   // default is the real ~10s budget (quality-review MINOR-5): a hung
@@ -36,6 +43,7 @@ class BoosterBalance extends HTMLElement {
   connectedCallback() {
     this.clear();
     const loading = document.createElement('p');
+    loading.className = 'booster-balance-loading';
     loading.textContent = 'Loading your balance…';
     this.appendChild(loading);
 
@@ -84,6 +92,7 @@ class BoosterBalance extends HTMLElement {
   renderError() {
     this.clear();
     const p = document.createElement('p');
+    p.className = 'booster-balance-error';
     p.textContent = 'We could not load your balance right now. Please try again later — your account is not affected.';
     this.appendChild(p);
   }
@@ -115,6 +124,7 @@ class BoosterBalance extends HTMLElement {
     this.clear();
     if (v.empty) {
       const p = document.createElement('p');
+      p.className = 'booster-balance-empty';
       p.textContent = 'No billing account is linked to your login yet. If you expected one, contact the boosters.';
       this.appendChild(p);
       return;
@@ -125,8 +135,10 @@ class BoosterBalance extends HTMLElement {
     container.className = 'booster-balance';
 
     const balanceP = document.createElement('p');
+    balanceP.className = 'booster-balance-amount';
     balanceP.appendChild(document.createTextNode('Balance due: '));
     const strong = document.createElement('strong');
+    strong.className = 'booster-balance-figure';
     strong.textContent = fmt.format(v.balance);
     balanceP.appendChild(strong);
     container.appendChild(balanceP);
@@ -170,7 +182,7 @@ class BoosterBalance extends HTMLElement {
     invoices.forEach((i) => {
       const p = document.createElement('p');
       const a = document.createElement('a');
-      a.className = 'button';
+      a.className = 'button booster-balance-pay';
       a.href = i.safeLink;
       a.target = '_blank';
       a.rel = 'noopener';
@@ -185,6 +197,7 @@ class BoosterBalance extends HTMLElement {
 
     if (v.balance > 0 && !invoices.length) {
       const p = document.createElement('p');
+      p.className = 'booster-balance-nolinks';
       p.textContent = 'Online payment links are unavailable right now — your invoice can be paid from the emailed QuickBooks invoice.';
       container.appendChild(p);
     }

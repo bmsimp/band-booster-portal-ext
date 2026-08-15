@@ -1,4 +1,4 @@
-<div class="crm-block">
+<div class="crm-block booster-portal-login">
 {if $sent}
   <p>{ts}If we have that address on file, a sign-in link is on its way. It works once and expires in 20 minutes.{/ts}</p>
 {else}

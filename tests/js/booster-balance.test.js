@@ -219,3 +219,61 @@ test('safeHttpsUrl: accepts only well-formed https:// URLs', () => {
   assert.equal(el.safeHttpsUrl(undefined), null);
   assert.equal(el.safeHttpsUrl(12345), null);
 });
+
+test('CSS hooks: the balance card, figure and Pay link carry the classes the theme styles', async () => {
+  const el = makeElement(okFetch({
+    values: [{
+      balance: 125.5,
+      flagged: false,
+      partial: false,
+      empty: false,
+      invoices: [{ InvoiceLink: 'https://qbo.example/pay/1', DocNumber: '1001', InvoiceId: 'abc', Balance: 125.5 }],
+    }],
+  }));
+  el.connectedCallback();
+  await flush();
+
+  assert.equal(el.findAllByClass('booster-balance').length, 1);
+  assert.equal(el.findAllByClass('booster-balance-amount').length, 1);
+
+  const figure = el.findAllByClass('booster-balance-figure');
+  assert.equal(figure.length, 1, 'the currency figure needs its own hook — the theme sets it large and green');
+  assert.equal(figure[0].textContent, '$125.50');
+
+  const pay = el.findAllByClass('booster-balance-pay');
+  assert.equal(pay.length, 1);
+  assert.equal(pay[0].tagName, 'A');
+  assert.ok(pay[0].className.split(/\s+/).includes('button'),
+    'the Pay link must KEEP the plain .button class it already had');
+});
+
+test('CSS hooks: loading, empty, error and no-links states each carry a class', async () => {
+  const loadingEl = makeElement(() => new Promise(() => {}));
+  loadingEl.connectedCallback();
+  assert.equal(loadingEl.findAllByClass('booster-balance-loading').length, 1);
+
+  const emptyEl = makeElement(okFetch({
+    values: [{ balance: null, flagged: false, partial: false, invoices: [], students: [], empty: true }],
+  }));
+  emptyEl.connectedCallback();
+  await flush();
+  assert.equal(emptyEl.findAllByClass('booster-balance-empty').length, 1);
+
+  const errorEl = makeElement(() => Promise.reject(new Error('network down')));
+  errorEl.connectedCallback();
+  await flush();
+  assert.equal(errorEl.findAllByClass('booster-balance-error').length, 1);
+
+  const noLinksEl = makeElement(okFetch({
+    values: [{
+      balance: 55,
+      flagged: false,
+      partial: false,
+      empty: false,
+      invoices: [{ InvoiceLink: 'http://not-https.example/pay', DocNumber: '2002', Balance: 55 }],
+    }],
+  }));
+  noLinksEl.connectedCallback();
+  await flush();
+  assert.equal(noLinksEl.findAllByClass('booster-balance-nolinks').length, 1);
+});

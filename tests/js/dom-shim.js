@@ -102,6 +102,17 @@ class FakeNode {
     const upper = tagName.toUpperCase();
     return this.allDescendants().filter((n) => n.tagName === upper);
   }
+
+  /**
+   * Test helper: all descendants carrying a given class name. The theme
+   * (band-booster-portal: site/web/themes/custom/fznband/css/portal.css)
+   * styles this widget entirely through these class names, so they are a
+   * contract, not decoration — hence assertions about them.
+   */
+  findAllByClass(className) {
+    return this.allDescendants().filter((n) => typeof n.className === 'string'
+      && n.className.split(/\s+/).includes(className));
+  }
 }
 
 function createElement(tagName) {
