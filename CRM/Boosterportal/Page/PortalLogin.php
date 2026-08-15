@@ -34,13 +34,14 @@ use Civi\Boosterportal\MagicLink;
  *
  * ADVERSARIAL SECURITY REVIEW (post-launch, Task 15 follow-up):
  *
- *  IMPORTANT-2(ii): before finalizing a session, the loaded Drupal user must
- *  carry ONLY the parent role (and must not be uid 1, Drupal's superuser,
- *  which bypasses permission checks regardless of its role list). A contact
- *  who is both a parent AND a board member (or any other elevated role)
- *  must never get a PRIVILEGED session merely by walking the magic-link
- *  door — that door was designed and reviewed for the parent role only.
- *  See isSafeParentUser().
+ *  IMPORTANT-2(ii): before finalizing a session, the loaded WordPress user
+ *  must carry ONLY the parent role AND hold no capability above an ordinary
+ *  parent's. A contact who is both a parent AND a board member (or any
+ *  other elevated role) must never get a PRIVILEGED session merely by
+ *  walking the magic-link door — that door was designed and reviewed for
+ *  the parent role only. WordPress has no uid-1 concept the way Drupal
+ *  does; the equivalent guard is the capability check below. See
+ *  isSafeParentUser() and hasElevatedCapability().
  *
  *  IMPORTANT-4: Referrer-Policy: no-referrer is set on every response from
  *  this page. civicrm/portal/login?t=... carries the (already single-use,
@@ -58,6 +59,97 @@ use Civi\Boosterportal\MagicLink;
 class CRM_Boosterportal_Page_PortalLogin extends CRM_Core_Page {
 
   private const SESSION_CSRF_KEY = 'boosterportal_request_link_csrf';
+
+  /**
+   * The one WordPress role a portal parent holds.
+   *
+   * Registered by the site's boosterportal-parent-role mu-plugin (which also
+   * blocks password reset for it) and assigned by bin/provision-parents.php,
+   * both of which refer to this constant rather than repeating the string.
+   */
+  public const PARENT_ROLE = 'parent';
+
+  /**
+   * Capabilities that put an account above an ordinary parent.
+   *
+   * Grouped by what each one actually gives away:
+   *
+   *  - manage_options / install_plugins / activate_plugins / edit_plugins /
+   *    switch_themes / edit_theme_options / update_core / import / export
+   *                                                  : site administration.
+   *  - edit_users / create_users / delete_users /
+   *    promote_users / list_users / remove_users     : can reach or become
+   *                                                    another account.
+   *  - edit_posts / edit_pages / publish_posts /
+   *    edit_others_posts / upload_files              : any content role,
+   *                                                    contributor upward.
+   *  - unfiltered_html                               : can inject markup.
+   *  - administrator / super admin                   : a WordPress role name
+   *    is itself testable as a capability, and these two are exactly what
+   *    CRM_Core_Permission_WordPress::check() looks for before handing an
+   *    account EVERY CiviCRM permission unconditionally. Checking the same
+   *    two here means this door refuses precisely the accounts CiviCRM
+   *    itself would treat as omnipotent.
+   *  - view_all_contacts / edit_all_contacts /
+   *    access_all_custom_data / administer_civicrm /
+   *    administer_civicrm_system / administer_civicrm_data /
+   *    access_deleted_contacts                       : CiviCRM's own
+   *    permissions, exposed by its WordPress integration as capabilities
+   *    (permission string lowercased, spaces to underscores). Each one
+   *    defeats this project's per-family ACL outright — an account holding
+   *    view_all_contacts sees every family, hooks or no hooks — so none may
+   *    ever come through this door.
+   *
+   * NOT on this list, deliberately: access_civicrm. That is the base
+   * permission the parent dashboard Afform itself requires
+   * (ang/afformPortalDashboard.aff.json, "permission": "access CiviCRM"), so
+   * every provisioned parent holds it by design. It grants entry to CiviCRM,
+   * not visibility of anybody's data: what a parent can then see is decided
+   * entirely by boosterportal.php's ACL hooks.
+   *
+   * Deliberately a denylist of specific capabilities rather than "holds any
+   * capability besides read and access_civicrm": WordPress plugins add
+   * capabilities of their own freely (an events plugin, a forms plugin), and a
+   * parent who picks up some harmless third-party capability must not be
+   * locked out of the portal. The design §4.3 invariant that content-editor
+   * roles hold zero CiviCRM capabilities backstops the other direction, and
+   * the site's boosterportal-civicrm-capabilities mu-plugin is what keeps that
+   * invariant true against CiviCRM's own installer.
+   */
+  private const ELEVATED_CAPABILITIES = [
+    'administrator',
+    'super admin',
+    'manage_options',
+    'install_plugins',
+    'activate_plugins',
+    'edit_plugins',
+    'switch_themes',
+    'edit_themes',
+    'edit_theme_options',
+    'update_core',
+    'import',
+    'export',
+    'edit_users',
+    'create_users',
+    'delete_users',
+    'promote_users',
+    'list_users',
+    'remove_users',
+    'edit_posts',
+    'edit_pages',
+    'publish_posts',
+    'edit_others_posts',
+    'upload_files',
+    'moderate_comments',
+    'unfiltered_html',
+    'administer_civicrm',
+    'administer_civicrm_system',
+    'administer_civicrm_data',
+    'view_all_contacts',
+    'edit_all_contacts',
+    'access_all_custom_data',
+    'access_deleted_contacts',
+  ];
 
   public function run() {
     // IMPORTANT-4 — see class docblock. Guarded for the (non-HTTP) test/CLI
@@ -102,8 +194,10 @@ class CRM_Boosterportal_Page_PortalLogin extends CRM_Core_Page {
       CRM_Utils_System::redirect(CRM_Utils_System::url('civicrm/portal/request-link'));
       return;
     }
-    $user = \Drupal\user\Entity\User::load($ufMatch['uf_id']);
-    if (!$user || !self::isSafeParentUser((int) $user->id(), $user->getRoles(TRUE))) {
+
+    $uid = (int) $ufMatch['uf_id'];
+    $user = get_userdata($uid);
+    if (!$user || !self::isSafeParentUser(self::rolesOf($user), self::hasElevatedCapability($uid))) {
       // Deliberately the SAME message/redirect as "no account" and as the
       // token-invalid branch above — this must never tell an observer
       // WHICH reason a login failed for (unknown token vs. no account vs.
@@ -112,77 +206,101 @@ class CRM_Boosterportal_Page_PortalLogin extends CRM_Core_Page {
       CRM_Utils_System::redirect(CRM_Utils_System::url('civicrm/portal/request-link'));
       return;
     }
-    user_login_finalize($user);
+
+    // The WordPress equivalent of Drupal's user_login_finalize(): put the auth
+    // cookie on the response, make the account current for the rest of this
+    // request, and fire the action other plugins hook to observe a login.
+    // $remember = FALSE deliberately — a session cookie, not a fortnight-long
+    // one; a parent who wants back in requests another link. The cookie is a
+    // header, and the redirect below is the last chance to send one, so it
+    // goes first.
+    wp_set_auth_cookie($uid, FALSE);
+    wp_set_current_user($uid);
+    do_action('wp_login', $user->user_login, $user);
+
     CRM_Utils_System::redirect(CRM_Utils_System::url('civicrm/portal'));
   }
 
   /**
-   * IMPORTANT-2(ii): TRUE only for a Drupal user that is safe to sign in as
-   * via a magic link — i.e. an ordinary parent account and nothing more.
-   * Reject:
-   *  - uid 1 (Drupal's superuser; bypasses every permission check regardless
-   *    of its assigned role list, so it must never be reachable via this
-   *    door under any circumstance);
-   *  - any account whose role list (excluding the two implicit/locked
-   *    anonymous/authenticated roles) is anything OTHER than exactly
-   *    ['parent'] — in particular, a person who is both a provisioned
-   *    parent AND (separately) a board_member/administrator must not
-   *    receive session privileges beyond "parent" just because they walked
-   *    in through the magic-link door instead of Entra SSO (Task 14).
+   * The role list of a WordPress user, defensively.
    *
-   * Public + static so this is independently testable. Deliberately takes
-   * (int $uid, array $roles) rather than a \Drupal\user\UserInterface — this
-   * was originally typed against that interface, but Task 17's warm-up
-   * (unit-testing this function) found that \Drupal\user\UserInterface is
-   * not autoloadable at all under this extension's headless PHPUnit
-   * bootstrap (tests/phpunit/bootstrap.php only boots the CiviCRM
-   * classloader level, not Drupal's own autoloader/service container — see
-   * PortalLoginTest, which hit "Class or interface Drupal\user\UserInterface
-   * does not exist" when trying to mock it), so a real interface-typed
-   * parameter cannot be stubbed there at all, not even with a PHPUnit mock.
-   * Accepting plain scalars/arrays instead makes this a pure function
-   * testable with zero Drupal dependency, and keeps the caller (runLogin(),
-   * above) the one place that still talks to the real UserInterface —
-   * $user->id() and $user->getRoles(TRUE).
+   * WP_User::$roles is documented as a list of role-name strings, but it is
+   * reconstructed from user meta — unserialized data — so nothing structural
+   * guarantees its shape. Whatever comes back is handed to isSafeParentUser()
+   * as-is; that function answers "no" to anything unexpected rather than
+   * trusting this.
    *
-   * VERIFIED (quality-review MINOR-6, re-checked against both Drupal core
-   * source and a real account on this dev site): passing TRUE to
-   * \Drupal\user\Entity\User::getRoles() means "exclude the locked roles" —
-   * core's own implementation (web/core/modules/user/src/Entity/User.php)
-   * only ever adds the implicit anonymous/authenticated role when
-   * $exclude_locked_roles is FALSE, so a getRoles(TRUE) call NEVER returns
-   * 'authenticated' in the first place. Reproduced live: a real
-   * provisioned parent account's getRoles(TRUE) returned exactly
-   * ["parent"]; only getRoles(FALSE)/getRoles() (no argument) returned
-   * ["authenticated", "parent"]. So on the actual call path used by
-   * runLogin() above, $roles here never contains 'authenticated' — there
-   * was no bug to fix on that path.
-   *
-   * The filter below is added anyway, defensively: it costs nothing, it
-   * cannot loosen who's accepted (anonymous/authenticated are never
-   * privilege-bearing roles — stripping them only ever REMOVES candidates
-   * for rejection, it can't manufacture a match that wasn't otherwise
-   * there), and it means this function stays correct even if a future
-   * caller ever passes getRoles(FALSE)/getRoles()'s shape by mistake — a
-   * parent legitimately also holds the implicit 'authenticated' role and
-   * must not be rejected for it either way. See
-   * PortalLoginTest::testParentWithImplicitAuthenticatedRoleIsSafe() for
-   * the case this specifically covers now.
-   *
-   * @param int $uid
-   * @param string[] $roles
-   *   Ordinarily the result of a real UserInterface::getRoles(TRUE) call
-   *   (which — see above — never includes the locked anonymous/
-   *   authenticated roles in the first place); tolerated here too if
-   *   present, defensively.
+   * @param \WP_User $user
+   * @return array
    */
-  public static function isSafeParentUser(int $uid, array $roles): bool {
-    if ($uid === 1) {
+  private static function rolesOf($user): array {
+    return is_array($user->roles ?? NULL) ? $user->roles : [];
+  }
+
+  /**
+   * IMPORTANT-2(ii), WordPress half: does this account hold any capability
+   * that puts it above an ordinary parent?
+   *
+   * Kept separate from isSafeParentUser() (and not unit-tested) because it is
+   * the one part of the gate that must call WordPress itself — user_can() and
+   * is_super_admin() do not exist under the extension's headless PHPUnit
+   * bootstrap. It is deliberately thin: a loop, no logic. The decision it
+   * feeds lives in isSafeParentUser(), which is pure and fully tested.
+   *
+   * is_super_admin() is checked first and separately: on a multisite network a
+   * super admin's capabilities are granted dynamically, and while user_can()
+   * does honour that, the explicit check documents the case rather than
+   * leaving it to be inferred.
+   */
+  private static function hasElevatedCapability(int $uid): bool {
+    if (function_exists('is_super_admin') && is_super_admin($uid)) {
+      return TRUE;
+    }
+    foreach (self::ELEVATED_CAPABILITIES as $capability) {
+      if (user_can($uid, $capability)) {
+        return TRUE;
+      }
+    }
+    return FALSE;
+  }
+
+  /**
+   * IMPORTANT-2(ii): TRUE only for a WordPress account that is safe to sign a
+   * session in as via a magic link — an ordinary parent and nothing more.
+   *
+   * Reject:
+   *  - any account holding an elevated capability (see ELEVATED_CAPABILITIES
+   *    above). This is the WordPress equivalent of Drupal's uid-1 guard:
+   *    WordPress has no superuser id, so "is this account privileged" is a
+   *    question about capabilities rather than about a magic number;
+   *  - any account whose role list is anything OTHER than exactly ['parent'] —
+   *    in particular, a person who is both a provisioned parent AND separately
+   *    an administrator or editor must not receive session privileges beyond
+   *    "parent" just because they walked in through the magic-link door
+   *    instead of Entra SSO (Task 14).
+   *
+   * Public + static, and pure, so it is independently testable: the headless
+   * PHPUnit bootstrap boots CiviCRM's classloader only, with no WordPress at
+   * all, so nothing here may call get_userdata(), user_can() or any other
+   * WordPress function. The caller does that (see runLogin() and
+   * hasElevatedCapability()) and passes plain values in.
+   *
+   * @param string[] $roles
+   *   Ordinarily WP_User::$roles. Anything that is not a list of strings is
+   *   rejected rather than interpreted.
+   * @param bool $hasElevatedCapability
+   *   The answer hasElevatedCapability() gave for this account.
+   */
+  public static function isSafeParentUser(array $roles, bool $hasElevatedCapability): bool {
+    if ($hasElevatedCapability) {
       return FALSE;
     }
-    $roles = array_values(array_diff($roles, ['anonymous', 'authenticated']));
+    // Non-string entries are dropped rather than compared: $roles comes from
+    // unserialized user meta, so a corrupted or tampered value can only ever
+    // FAIL the exact-match test below, never satisfy it by accident.
+    $roles = array_values(array_filter($roles, 'is_string'));
     sort($roles);
-    return $roles === ['parent'];
+    return $roles === [self::PARENT_ROLE];
   }
 
   private function runRequestLink(): void {

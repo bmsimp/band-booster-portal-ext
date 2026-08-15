@@ -4,86 +4,100 @@ namespace Civi\Boosterportal;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Task 17 warm-up (Task 15 security review follow-up): isSafeParentUser()
- * (CRM_Boosterportal_Page_PortalLogin::isSafeParentUser()) is the gate that
- * decides whether a Drupal user loaded via a redeemed magic-link token is
- * safe to sign a CMS session in as (IMPORTANT-2(ii) in that class's
- * docblock). Until now its coverage was live-only (manually verified
- * against a real UFMatch row + Drupal roles table — see the Task 15 review
- * report).
+ * isSafeParentUser() (CRM_Boosterportal_Page_PortalLogin::isSafeParentUser())
+ * is the gate that decides whether a WordPress account reached through a
+ * redeemed magic-link token is safe to sign a session in as (IMPORTANT-2(ii)
+ * in that class's docblock).
  *
- * REFACTOR NOTE: this function was originally typed
- * isSafeParentUser(\Drupal\user\UserInterface $user). Attempting to mock
- * that interface here first (PHPUnit's createMock(\Drupal\user\UserInterface::class))
- * failed outright with "Class or interface Drupal\user\UserInterface does
- * not exist" — this extension's headless PHPUnit bootstrap
- * (tests/phpunit/bootstrap.php) only boots the CiviCRM classloader level,
- * never Drupal's own autoloader/service container, so the interface isn't
- * merely un-bootable, it isn't even a loadable class/interface symbol in
- * this process. That makes the "pass a stub/mock implementing UserInterface"
- * approach impossible here, exactly per the task's fallback instruction —
- * so the function was refactored to take (int $uid, array $roles) instead,
- * with the caller (PortalLogin::runLogin()) now responsible for extracting
- * $user->id() and $user->getRoles(TRUE) before calling it. See the
- * function's own docblock in CRM/Boosterportal/Page/PortalLogin.php for the
- * full reasoning. What's under test below is now a pure function of two
- * plain PHP values — no Drupal dependency of any kind.
+ * WORDPRESS PORT NOTE: the Drupal signature was
+ * isSafeParentUser(int $uid, array $roles), with a uid-1 guard because
+ * Drupal's user 1 bypasses every permission check regardless of its roles.
+ * WordPress has no equivalent superuser id — an account is privileged if it
+ * holds privileged CAPABILITIES — so the guard became a boolean the caller
+ * computes, and the signature is now
+ * isSafeParentUser(array $roles, bool $hasElevatedCapability).
+ *
+ * The function stays pure for the same reason it was made pure under Drupal:
+ * this extension's headless PHPUnit bootstrap (tests/phpunit/bootstrap.php)
+ * boots the CiviCRM classloader only. Under Drupal that meant
+ * \Drupal\user\UserInterface was not even a loadable symbol to mock; under
+ * WordPress it means get_userdata(), user_can() and is_super_admin() do not
+ * exist in this process at all. Everything that must ask WordPress a question
+ * lives in the caller (runLogin(), rolesOf(), hasElevatedCapability()); what
+ * is tested below is a pure function of two plain PHP values.
  */
 class PortalLoginTest extends TestCase {
 
-  public function testUid1IsNeverSafeEvenWithOnlyParentRole(): void {
-    // Drupal's uid 1 bypasses every permission check regardless of role
-    // list — must be rejected unconditionally (IMPORTANT-2(ii)).
-    $this->assertFalse(\CRM_Boosterportal_Page_PortalLogin::isSafeParentUser(1, ['parent']));
-  }
-
   public function testExactlyParentRoleIsSafe(): void {
-    $this->assertTrue(\CRM_Boosterportal_Page_PortalLogin::isSafeParentUser(42, ['parent']));
+    $this->assertTrue(\CRM_Boosterportal_Page_PortalLogin::isSafeParentUser(['parent'], FALSE));
   }
 
-  public function testParentPlusBoardMemberIsNotSafe(): void {
-    // The privilege-escalation case this gate exists for: a contact who is
-    // both a provisioned parent AND separately a board_member must not get
-    // a session with privileges beyond "parent" via the magic-link door.
-    // Unsorted input on purpose — the function must sort before comparing.
-    $this->assertFalse(\CRM_Boosterportal_Page_PortalLogin::isSafeParentUser(42, ['board_member', 'parent']));
+  public function testAdministratorIsNeverSafe(): void {
+    // The WordPress replacement for the uid-1 case. An administrator holds
+    // every capability, including the ones CiviCRM reads to decide that an
+    // account may see every contact, so this door must never open for one.
+    $this->assertFalse(\CRM_Boosterportal_Page_PortalLogin::isSafeParentUser(['administrator'], TRUE));
   }
 
-  public function testParentWithImplicitAuthenticatedRoleIsSafe(): void {
-    // MINOR-6 (quality review) — actually distinct from
-    // testExactlyParentRoleIsSafe() now, and backed by a live check rather
-    // than an assumption: is ['authenticated', 'parent'] really the shape
-    // \Drupal\user\Entity\User::getRoles(TRUE) hands back for an ordinary
-    // parent account?
-    //
-    // Checked both ways: Drupal core's own getRoles() (User.php) only adds
-    // the locked anonymous/authenticated role when $exclude_locked_roles is
-    // FALSE — a getRoles(TRUE) call never includes it. Reproduced live
-    // against a real provisioned parent account on the dev site:
-    // getRoles(TRUE) => ["parent"]; only getRoles(FALSE)/getRoles() (no
-    // argument) => ["authenticated", "parent"]. So on the real call path
-    // (PortalLogin::runLogin() calls getRoles(TRUE)), 'authenticated' is
-    // NEVER present — isSafeParentUser() passing ['parent'] alone would
-    // already have covered the real-world case correctly.
-    //
-    // isSafeParentUser() now ALSO defensively strips 'authenticated'/
-    // 'anonymous' if they happen to be present anyway (belt-and-braces —
-    // see that function's own docblock for why this is safe: it can only
-    // ever remove a rejection reason, never manufacture a match). This test
-    // exercises exactly that defensive path with the UNSORTED
-    // ['authenticated', 'parent'] shape a getRoles(FALSE) call — or any
-    // future caller mistake — would actually produce, proving the
-    // filter-then-sort logic handles it correctly either way.
-    $this->assertTrue(\CRM_Boosterportal_Page_PortalLogin::isSafeParentUser(42, ['authenticated', 'parent']));
+  public function testParentPlusAdministratorIsNotSafe(): void {
+    // The privilege-escalation case this gate exists for: someone who is both
+    // a provisioned parent AND separately an administrator must not get a
+    // privileged session by walking in through the magic-link door instead of
+    // Entra SSO. Unsorted input on purpose — the function must sort before
+    // comparing.
+    $this->assertFalse(\CRM_Boosterportal_Page_PortalLogin::isSafeParentUser(['administrator', 'parent'], TRUE));
+  }
+
+  public function testElevatedCapabilityAloneIsNotSafe(): void {
+    // A role list of exactly ['parent'] is not enough on its own. This is an
+    // account whose parent role has been granted something like manage_options
+    // out of band — in wp-admin, or by a plugin. The capability answer alone
+    // must be able to refuse it.
+    $this->assertFalse(\CRM_Boosterportal_Page_PortalLogin::isSafeParentUser(['parent'], TRUE));
   }
 
   public function testNoRolesIsNotSafe(): void {
-    $this->assertFalse(\CRM_Boosterportal_Page_PortalLogin::isSafeParentUser(42, []));
+    $this->assertFalse(\CRM_Boosterportal_Page_PortalLogin::isSafeParentUser([], FALSE));
   }
 
-  public function testBoardMemberOnlyIsNotSafe(): void {
-    // Not a parent at all — must never be treated as one.
-    $this->assertFalse(\CRM_Boosterportal_Page_PortalLogin::isSafeParentUser(42, ['board_member']));
+  public function testSubscriberOnlyIsNotSafe(): void {
+    // Not a parent at all — must never be treated as one. WordPress hands
+    // every new account 'subscriber' by default, so this is the shape an
+    // account created by any other route arrives in.
+    $this->assertFalse(\CRM_Boosterportal_Page_PortalLogin::isSafeParentUser(['subscriber'], FALSE));
   }
+
+  public function testParentPlusUnprivilegedExtraRoleIsNotSafe(): void {
+    // Exactly-parent, not parent-and-anything. 'subscriber' carries no
+    // privilege worth having, and the answer is still no: the door is defined
+    // by an exact role list, not by whether the extra role looks harmless
+    // today. Deciding "which extra roles are safe" is exactly the judgement
+    // this function exists to avoid making.
+    $this->assertFalse(\CRM_Boosterportal_Page_PortalLogin::isSafeParentUser(['parent', 'subscriber'], FALSE));
+  }
+
+  public function testNonStringRoleEntriesCannotManufactureAMatch(): void {
+    // WP_User::$roles is rebuilt from unserialized user meta, so its shape is
+    // not structurally guaranteed. isSafeParentUser() drops anything that is
+    // not a string before comparing, which is the safe direction: a corrupted
+    // or tampered entry can only ever REMOVE a candidate from the comparison,
+    // never satisfy it. An account whose roles are junk holds no parent role
+    // at all and is refused.
+    $this->assertFalse(\CRM_Boosterportal_Page_PortalLogin::isSafeParentUser([NULL], FALSE));
+    $this->assertFalse(\CRM_Boosterportal_Page_PortalLogin::isSafeParentUser([123, ['nested']], FALSE));
+    $this->assertFalse(\CRM_Boosterportal_Page_PortalLogin::isSafeParentUser([['parent']], FALSE));
+  }
+
+  public function testJunkAlongsideTheParentRoleStillSignsIn(): void {
+    // The deliberate other half of the rule above, stated so nobody has to
+    // infer it: an account that genuinely holds the parent role is not locked
+    // out because its meta also carries a non-string entry. Nothing is given
+    // away by that -- a junk entry is not a WordPress role and grants no
+    // capability, and every capability the account really holds was checked
+    // separately by hasElevatedCapability() before this function was called.
+    $this->assertTrue(\CRM_Boosterportal_Page_PortalLogin::isSafeParentUser(['parent', 42], FALSE));
+  }
+
+
 
 }

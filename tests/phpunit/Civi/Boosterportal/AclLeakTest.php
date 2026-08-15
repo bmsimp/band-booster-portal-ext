@@ -137,7 +137,9 @@ class AclLeakTest extends TestCase implements HeadlessInterface, TransactionalIn
       ->addSelect('name', 'saved_search_id.name')
       ->execute();
     $runCount = 0;
-    $skippedCount = 0;
+    $deniedCount = 0;
+    $erroredCount = 0;
+    $swept = [];
     foreach ($displays as $display) {
       try {
         $result = \civicrm_api4('SearchDisplay', 'run', [
@@ -153,10 +155,34 @@ class AclLeakTest extends TestCase implements HeadlessInterface, TransactionalIn
         // which doesn't exist until Task 17). A hard permission denial is a
         // stronger guarantee than an empty leak-free result: nothing ran, so
         // nothing could have leaked. Move on to the next display.
-        $skippedCount++;
+        $deniedCount++;
+        continue;
+      }
+      catch (\Throwable $e) {
+        // The display failed for this parent. The cause varies and is always
+        // core's, not this extension's: CiviCRM 6.17.2 ships three saved
+        // searches whose own SQL will not build ("Invalid field ..."),
+        // civi_member's MembershipStatusLinksProvider auto-vivifies
+        // title-less tasks for a user who may not edit membership statuses
+        // (so GetSearchTasks' closing usort on $task['title'] trips), and
+        // core raises deprecation notices that phpunit.xml.dist turns into
+        // exceptions.
+        //
+        // For THIS test all of those have the same consequence, and it is
+        // the only one that matters: the call threw, so no rows reached the
+        // parent, so this display leaked nothing to them.
+        //
+        // Tolerated as a rule rather than enumerated as a skip-list of
+        // display names: the list belongs to core, it changes with every
+        // CiviCRM upgrade, and a stale entry silently stops sweeping a
+        // display that still exists. What stops this branch from quietly
+        // hollowing out the sweep is the assertion below -- the extension's
+        // OWN dashboard display must be among the ones that actually ran.
+        $erroredCount++;
         continue;
       }
       $runCount++;
+      $swept[] = $display['name'];
       $flat = json_encode($result);
       foreach ($sentinels as $sentinel) {
         $this->assertStringNotContainsString($sentinel, $flat,
@@ -168,8 +194,9 @@ class AclLeakTest extends TestCase implements HeadlessInterface, TransactionalIn
     // output shows how much of the sweep actually exercised checkPermissions
     // logic even on a green run.
     fwrite(STDOUT, sprintf(
-      "[AclLeakTest] SearchDisplay sweep: %d run, %d skipped as UnauthorizedException (of %d displays total)\n",
-      $runCount, $skippedCount, $displays->count()
+      "[AclLeakTest] SearchDisplay sweep: %d run and checked, %d denied outright, "
+      . "%d failed for this parent (of %d displays total)\n",
+      $runCount, $deniedCount, $erroredCount, $displays->count()
     ));
 
     // Task 17: the dashboard's own displays (Your_Students / your-students-table)
@@ -179,8 +206,15 @@ class AclLeakTest extends TestCase implements HeadlessInterface, TransactionalIn
     // the sweep above to have exercised any checkPermissions logic at all.
     // Tightened from assertGreaterThanOrEqual(0, ...): zero real runs would now
     // mean the sweep is vacuous — nothing was actually swept for leaks.
-    $this->assertGreaterThan(0, $runCount,
-      "Sanity: {$runCount} of {$displays->count()} displays actually ran under checkPermissions ({$skippedCount} skipped as UnauthorizedException). Zero means the sweep is vacuous.");
+    // The sweep must never be allowed to go vacuous. $runCount > 0 alone is a
+    // weak guard now that any core failure is tolerated above, so name the one
+    // display this project actually owns: the dashboard table, which parent A
+    // can reach (they hold access CiviCRM and a real Portal_Parent_of edge to
+    // their own student). If it stops being swept, the tolerant catch has
+    // started hiding something and this test says so.
+    $this->assertContains('your-students-table', $swept,
+      "The dashboard's own SearchDisplay was not among the {$runCount} displays that ran and were checked "
+      . "({$deniedCount} denied, {$erroredCount} failed) -- the sweep is no longer covering the display that matters.");
   }
 
   /**

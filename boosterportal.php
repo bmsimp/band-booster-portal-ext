@@ -423,8 +423,9 @@ function boosterportal_civicrm_validateForm($formName, &$fields, &$files, &$form
 /**
  * Implements hook_civicrm_pageRun().
  *
- * Task 17 (§4.9): loads the ONE custom widget (js/booster-balance.js) on the
- * parent dashboard route only. Verified empirically that this hook DOES fire
+ * Task 17 (§4.9): loads the dashboard's two framework-free widgets --
+ * js/booster-balance.js and js/booster-signout.js -- on the parent dashboard
+ * route only. Verified empirically that this hook DOES fire
  * for an Afform server_route page: CRM_Afform_Page_AfformBase (the
  * page_callback afform.php's hook_civicrm_alterMenu() wires up for every
  * Afform with a server_route) extends CRM_Core_Page and calls parent::run()
@@ -444,5 +445,6 @@ function boosterportal_civicrm_validateForm($formName, &$fields, &$files, &$form
 function boosterportal_civicrm_pageRun(&$page): void {
   if (CRM_Utils_System::currentPath() === 'civicrm/portal') {
     Civi::resources()->addScriptFile('boosterportal', 'js/booster-balance.js');
+    Civi::resources()->addScriptFile('boosterportal', 'js/booster-signout.js');
   }
 }

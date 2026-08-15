@@ -434,4 +434,66 @@ class ReconTest extends TestCase implements HeadlessInterface, TransactionalInte
     $this->assertContains(1, $nums, 'Sanity: this fixture must actually produce a CRITICAL finding');
   }
 
+  // -------------------------------------------------------------------
+  // Check 9 — a portal login with nothing to show. The population is
+  // "accounts that can sign in", which is not the same as "parents": the
+  // webmaster's own account has a civicrm_uf_match row too, from the first
+  // time it opened CiviCRM, and it will never have a student.
+  // -------------------------------------------------------------------
+
+  private const STAFF_ROLES = ['administrator', 'editor', 'author', 'contributor', 'booster_volunteer'];
+
+  public function testCheckNineIgnoresStaffAccounts(): void {
+    foreach (self::STAFF_ROLES as $role) {
+      $this->assertFalse(Recon::isPortalLoginAccount([$role], self::STAFF_ROLES),
+        "An account holding '{$role}' is staff, not a band parent, and must not be reported as a parent with no students.");
+    }
+  }
+
+  public function testCheckNineIgnoresAnAccountThatIsBothStaffAndSomethingElse(): void {
+    // A board member who is also, separately, a parent signs in through SSO
+    // with THIS account and through a magic link with a different one. Holding
+    // any staff role at all is enough to leave this account out of the report.
+    $this->assertFalse(Recon::isPortalLoginAccount(['parent', 'booster_volunteer'], self::STAFF_ROLES));
+  }
+
+  public function testCheckNineExaminesEverythingThatIsNotStaff(): void {
+    // The exclusion is a denylist, so anything unrecognised stays IN the
+    // report. That is the direction an alarm should fail in: a role somebody
+    // forgot to add to the setting shows up as a false positive that can be
+    // seen and fixed, rather than as a real parent quietly dropping out.
+    $this->assertTrue(Recon::isPortalLoginAccount(['parent'], self::STAFF_ROLES));
+    $this->assertTrue(Recon::isPortalLoginAccount(['some_role_invented_next_year'], self::STAFF_ROLES));
+    // No roles found at all — which is also what the headless harness sees,
+    // since there is no CMS in that process to ask.
+    $this->assertTrue(Recon::isPortalLoginAccount([], self::STAFF_ROLES));
+    // Roles come from CMS user meta, so the list is not structurally
+    // guaranteed. Junk is ignored rather than interpreted.
+    $this->assertTrue(Recon::isPortalLoginAccount([NULL, 42, ['nested']], self::STAFF_ROLES));
+  }
+
+  public function testCheckNineStillReportsAPortalLoginWithNoStudents(): void {
+    // The check must keep doing its actual job: this is a parent whose family
+    // was set up wrong, who would sign in to an empty dashboard.
+    $orphan = Contact::create(FALSE)
+      ->addValue('contact_type', 'Individual')
+      ->addValue('first_name', 'Orla')
+      ->addValue('last_name', 'Orphan')
+      ->execute()->first();
+    \Civi\Api4\UFMatch::create(FALSE)
+      ->addValue('uf_id', 91500 + $orphan['id'])
+      ->addValue('contact_id', $orphan['id'])
+      ->addValue('uf_name', 'orla.orphan@example.org')
+      ->execute();
+
+    $nine = array_values(array_filter((new Recon())->run(),
+      fn($finding) => $finding['check_num'] === 9));
+
+    $this->assertCount(1, $nine, 'Check 9 must still report a portal login with no students: ' . json_encode($nine));
+    $this->assertSame('WARNING', $nine[0]['severity'],
+      'Check 9 is somebody signing in to an empty page, not a data-integrity emergency.');
+    $this->assertStringContainsString('orla.orphan@example.org', $nine[0]['detail'],
+      'The finding must name the account, or nobody can act on it.');
+  }
+
 }
