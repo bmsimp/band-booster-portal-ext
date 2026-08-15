@@ -186,12 +186,16 @@ class Recon {
          WHERE r.contact_id_b = s.entity_id AND r.is_active = 1 AND r.is_permission_a_b > 0)"));
 
     // #9 Parent with a portal identity but nothing to see.
-    $f = array_merge($f, $this->sqlCheck(9, 'ERROR', 'Portal login sees no students',
-      "SELECT u.contact_id, u.uf_name FROM civicrm_uf_match u
-       JOIN civicrm_contact c ON c.id = u.contact_id AND c.contact_type = 'Individual'
-       WHERE NOT EXISTS (
-         SELECT 1 FROM civicrm_relationship r
-         WHERE r.contact_id_a = u.contact_id AND r.is_active = 1 AND r.is_permission_a_b > 0)"));
+    //
+    // WARNING rather than ERROR: this is "somebody's family is set up wrong and
+    // they will sign in to an empty page", which wants looking at this week. It
+    // is not the class of thing checks 3 and 4 report.
+    //
+    // Staff accounts are excluded (see isPortalLoginAccount()). A board member
+    // or volunteer signs in through SSO with an account of their own that has
+    // no Portal_Parent_of relationship and never will, so the raw query is
+    // permanently true of them.
+    $f = array_merge($f, $this->portalLoginsWithNoStudents());
 
     // #10 Balance on a student with no live CiviCRM record ("no active
     // enrollment" refines to season enrollment in Phase 2; Phase 1 proxy:
@@ -381,6 +385,97 @@ class Recon {
     $this->store($f, self::HOURLY_CHECK_NUMS);
     $this->emailCritical($f);
     return $f;
+  }
+
+  /**
+   * Check 9's rows: accounts that can sign in to the portal and would see
+   * nothing when they did.
+   *
+   * Written out rather than handed to sqlCheck() because the SQL alone cannot
+   * answer the question. "Has a login and no students" is equally true of a
+   * broken parent and of the webmaster's own account, and CiviCRM holds
+   * nothing that tells them apart -- the difference lives in the CMS, in which
+   * roles the account carries.
+   */
+  private function portalLoginsWithNoStudents(): array {
+    $nonPortalRoles = $this->nonPortalRoles();
+    $out = [];
+    $dao = \CRM_Core_DAO::executeQuery(
+      "SELECT u.uf_id, u.contact_id, u.uf_name FROM civicrm_uf_match u
+       JOIN civicrm_contact c ON c.id = u.contact_id AND c.contact_type = 'Individual'
+       WHERE NOT EXISTS (
+         SELECT 1 FROM civicrm_relationship r
+         WHERE r.contact_id_a = u.contact_id AND r.is_active = 1 AND r.is_permission_a_b > 0)");
+    while ($dao->fetch()) {
+      if (!self::isPortalLoginAccount(self::cmsRolesOf((int) $dao->uf_id), $nonPortalRoles)) {
+        continue;
+      }
+      $out[] = ['check_num' => 9, 'severity' => 'WARNING', 'title' => 'Portal login sees no students',
+        'detail' => json_encode($dao->toArray())];
+    }
+    return $out;
+  }
+
+  /**
+   * The configured list of CMS roles that mean "not a band parent".
+   *
+   * Falls back to the setting's own default if the stored value is not a list,
+   * so a hand-edited setting cannot accidentally empty the exclusion and bring
+   * every staff account back into the report.
+   */
+  private function nonPortalRoles(): array {
+    $configured = \Civi::settings()->get('boosterportal_non_portal_roles');
+    return is_array($configured) && $configured !== []
+      ? $configured
+      : ['administrator', 'editor', 'author', 'contributor', 'booster_volunteer'];
+  }
+
+  /**
+   * The CMS roles of a CMS account id.
+   *
+   * The one place in Recon that talks to the CMS, kept deliberately thin -- a
+   * lookup, no logic -- for the same reason
+   * CRM_Boosterportal_Page_PortalLogin::hasElevatedCapability() is: the
+   * headless PHPUnit bootstrap boots CiviCRM's classloader alone, so
+   * get_userdata() does not exist in that process at all.
+   *
+   * Returning [] when there is no CMS is the safe direction for this check. It
+   * means "no staff role found", so the account stays IN the report rather than
+   * silently dropping out of it, and the headless tests exercise check 9 as
+   * they always did.
+   */
+  private static function cmsRolesOf(int $ufId): array {
+    if (!function_exists('get_userdata')) {
+      return [];
+    }
+    $user = get_userdata($ufId);
+    return ($user && is_array($user->roles ?? NULL)) ? $user->roles : [];
+  }
+
+  /**
+   * Is this account one check 9 should have an opinion about?
+   *
+   * Pure and public so it is testable without a CMS. Excludes rather than
+   * includes on purpose: an account holding a listed staff role is skipped, and
+   * everything else is examined. The inclusive form ("only accounts holding the
+   * parent role") would quietly stop examining a real parent whose account had
+   * drifted -- an alarm that goes silent when its assumptions rot is worse than
+   * one that goes noisy, because nobody notices silence.
+   *
+   * @param string[] $roles
+   *   The account's CMS roles. Non-string entries are ignored rather than
+   *   interpreted; [] means no staff role was found, so the account is
+   *   examined.
+   * @param string[] $nonPortalRoles
+   *   The configured staff roles.
+   */
+  public static function isPortalLoginAccount(array $roles, array $nonPortalRoles): bool {
+    foreach ($roles as $role) {
+      if (is_string($role) && in_array($role, $nonPortalRoles, TRUE)) {
+        return FALSE;
+      }
+    }
+    return TRUE;
   }
 
   private function sqlCheck(int $num, string $severity, string $title, string $sql): array {
