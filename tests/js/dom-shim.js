@@ -105,7 +105,8 @@ class FakeNode {
 
   /**
    * Test helper: all descendants carrying a given class name. The theme
-   * (band-booster-portal: site/web/themes/custom/fznband/css/portal.css)
+   * (styled in the stock theme's Additional CSS, per design §4.5 — there is
+   * no custom theme or stylesheet in either repository)
    * styles this widget entirely through these class names, so they are a
    * contract, not decoration — hence assertions about them.
    */

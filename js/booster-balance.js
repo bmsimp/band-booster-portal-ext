@@ -25,13 +25,19 @@
 // https:// URL before it's ever used as an href — see safeHttpsUrl() below —
 // and simply dropped (balance still shown, no Pay link for that invoice) if
 // it fails.
-// THEMING (public-face design §4.3): the class names below —
-// booster-balance, -amount, -figure, -pay, -note, -loading, -empty, -error,
-// -nolinks — are the ONLY hooks the site theme has on this widget
-// (band-booster-portal: site/web/themes/custom/fznband/css/portal.css).
-// Renaming one silently unstyles part of the parent dashboard in the other
-// repository, so tests/js/booster-balance.test.js asserts on them. Adding a
-// class here is cheap; renaming one is a two-repository change.
+// THEMING: the class names below — booster-balance, -amount, -figure, -pay,
+// -note, -loading, -empty, -error, -nolinks — are the ONLY hooks any styling
+// has on this widget, so tests/js/booster-balance.test.js asserts on them.
+// Adding a class here is cheap; renaming one silently unstyles part of the
+// parent dashboard.
+//
+// There is deliberately no custom theme and no stylesheet in either
+// repository to point at: design §4.5 requires a stock theme and nothing a
+// volunteer cannot change from the admin interface, so whatever styles these
+// classes lives in the theme's Additional CSS, edited in wp-admin. (An
+// earlier version of this comment named a Drupal theme path,
+// site/web/themes/custom/fznband/css/portal.css, which no longer exists and
+// under §4.5 never will.)
 class BoosterBalance extends HTMLElement {
   // Overridable per-instance/class for testing (tests/js/) — production
   // default is the real ~10s budget (quality-review MINOR-5): a hung
