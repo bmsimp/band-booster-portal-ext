@@ -1,2 +1,6 @@
 /vendor/
 *.log
+
+# Superpowers working files - plans and brainstorms, not part of the extension.
+.superpowers/
+**/superpowers/
