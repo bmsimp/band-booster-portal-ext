@@ -442,7 +442,7 @@ class ReconTest extends TestCase implements HeadlessInterface, TransactionalInte
   // -------------------------------------------------------------------
 
   // The same list as the boosterportal_non_portal_roles setting's default.
-  private const STAFF_ROLES = ['administrator', 'editor', 'author', 'contributor',
+  private const STAFF_ROLES = ['administrator', 'editor', 'author', 'contributor', 'subscriber',
     'booster_board', 'booster_volunteer', 'booster_webmaster'];
 
   public function testCheckNineIgnoresStaffAccounts(): void {
