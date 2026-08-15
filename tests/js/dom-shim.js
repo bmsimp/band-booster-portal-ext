@@ -165,4 +165,31 @@ function loadWidget(fetchImpl) {
   );
 }
 
-module.exports = { FakeNode, createElement, createTextNode, loadWidget };
+// The same trick for js/booster-signout.js. A second compile rather than a
+// parameterised one: the two widgets reference different free identifiers
+// (the balance widget needs fetch/AbortController/timers, the sign-out
+// control needs CRM), and passing every identifier either might ever want to
+// both of them would make each test's stubs less obvious, not more.
+const compileSignout = new Function(
+  'document', 'HTMLElement', 'customElements', 'CRM',
+  `${require('fs').readFileSync(require('path').join(__dirname, '..', '..', 'js', 'booster-signout.js'), 'utf8')}
+   return BoosterSignout;`
+);
+
+/**
+ * Returns a fresh BoosterSignout class wired to this shim's document and to
+ * the given CRM stub. Pass undefined for CRM to exercise the "CiviCRM's JS
+ * never loaded" fallback.
+ *
+ * @param {object|undefined} crm An object with a url(path) method, or undefined.
+ */
+function loadSignout(crm) {
+  return compileSignout(
+    { createElement, createTextNode },
+    FakeNode,
+    { define: () => {} },
+    crm,
+  );
+}
+
+module.exports = { FakeNode, createElement, createTextNode, loadWidget, loadSignout };
