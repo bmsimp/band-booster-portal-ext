@@ -20,7 +20,7 @@ jobs:
         run: |
           export PATH=$HOME/.local/bin:$PATH
           SITE=$HOME/projects/band-booster-portal/site
-          EXT=$SITE/web/sites/default/files/civicrm/ext/boosterportal
+          EXT=$SITE/wp-content/uploads/civicrm/ext/boosterportal
           cd $EXT
           if [ -n "$(git status --porcelain)" ]; then echo "extension working tree dirty — commit or stash before CI can run"; exit 1; fi
           git fetch origin
@@ -41,7 +41,16 @@ jobs:
           # failure mode (README > "Running extension tests") by re-running
           # it on every CI invocation rather than assuming it's still set.
           $HOME/projects/band-booster-portal/scripts/setup-test-db.sh
-          ddev exec bash -c 'cd web/sites/default/files/civicrm/ext/boosterportal && /var/www/html/vendor/bin/phpunit tests/phpunit'
+          # CIVICRM_UF=UnitTests is what makes civicrm.settings.php take its DSN
+          # from $GLOBALS['_CV']['TEST_DB_DSN'] (the civi_test database seeded
+          # just above) instead of the live site's. Never drop it.
+          #
+          # phpunit is the one baked into the web image by
+          # site/.ddev/web-build/Dockerfile, together with cv: a WordPress
+          # docroot has no composer project to provide a vendor/bin, and the
+          # extension's PHPUnit bootstrap shells out to `cv php:boot`, so both
+          # have to be on PATH inside the container anyway.
+          ddev exec bash -c 'cd wp-content/uploads/civicrm/ext/boosterportal && CIVICRM_UF=UnitTests phpunit tests/phpunit'
           # quality-review IMPORTANT-3: js/booster-balance.js's own test suite
           # (tests/js/) — Node's built-in test runner, zero deps. Run via
           # `ddev exec` (not the runner's own `node`) for parity with every
@@ -52,5 +61,5 @@ jobs:
           # the `trap ... EXIT` above resets $EXT back to `main` the moment
           # THIS step's script exits, so a later step would no longer be
           # looking at the pushed SHA.
-          ddev exec bash -c 'cd web/sites/default/files/civicrm/ext/boosterportal/tests/js && node --test'
+          ddev exec bash -c 'cd wp-content/uploads/civicrm/ext/boosterportal/tests/js && node --test'
           cd $HOME/projects/band-booster-portal && ./scripts/check-invariants.sh
