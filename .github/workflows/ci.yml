@@ -20,7 +20,27 @@ jobs:
         run: |
           export PATH=$HOME/.local/bin:$PATH
           SITE=$HOME/projects/band-booster-portal/site
-          EXT=$SITE/wp-content/uploads/civicrm/ext/boosterportal
+          # The HOST path of the extension repository, which is NOT the path it
+          # appears at inside the container. The extension is bind-mounted into
+          # the site at wp-content/uploads/civicrm/ext/boosterportal, and that
+          # mount only exists inside the web container; on the host the same
+          # path is an empty mount point that sits INSIDE the site repository.
+          #
+          # Git commands run there therefore operate on the SITE repo, silently,
+          # because it is a perfectly valid repository — just the wrong one.
+          # That is exactly how this failed the first time CI ran after the
+          # WordPress port: the dirty-tree check passed (the site repo was
+          # clean), `git fetch origin` succeeded (against the site repo's
+          # remote), and `git checkout --detach <extension sha>` then reported
+          # "reference is not a tree" because the commit does not exist in the
+          # repository it was standing in. Worse than the failure: had the
+          # checkout succeeded, the trap below would have left the SITE repo
+          # detached and moved.
+          EXT=$HOME/projects/band-booster-portal-ext
+          # Fail loudly rather than operate on whatever repository happens to
+          # contain $EXT. info.xml is the extension's own manifest and exists in
+          # no other repo here.
+          if [ ! -f "$EXT/info.xml" ]; then echo "$EXT is not the extension repository — check EXT in this workflow"; exit 1; fi
           cd $EXT
           if [ -n "$(git status --porcelain)" ]; then echo "extension working tree dirty — commit or stash before CI can run"; exit 1; fi
           git fetch origin
