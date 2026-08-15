@@ -20,4 +20,11 @@
     <access_arguments>*always allow*</access_arguments>
     <is_public>true</is_public>
   </item>
+  <item>
+    <path>civicrm/portal/logout</path>
+    <page_callback>CRM_Boosterportal_Page_PortalLogout</page_callback>
+    <title>Signing you out</title>
+    <access_arguments>*always allow*</access_arguments>
+    <is_public>true</is_public>
+  </item>
 </menu>
