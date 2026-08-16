@@ -17,6 +17,62 @@ class InvariantTest extends TestCase implements HeadlessInterface {
   }
 
   /**
+   * Every permission string this extension gates on must be a permission
+   * CiviCRM actually has.
+   *
+   * The check that was missing, and the reason it was missing: CiviCRM's
+   * UnitTests permission class is a stub that answers "yes" to any string you
+   * put in its array, so a test can grant a permission that does not exist and
+   * see it work. ReconFinding::permissions() gated on
+   * 'access CiviCRM backend and API' for months and passed its tests, because
+   * both the gate and the test used the same non-existent string.
+   *
+   * It is not a permission. It is the LABEL of the permission whose key is
+   * 'access CiviCRM'. On Drupal that distinction never surfaced. On WordPress,
+   * permissions become capabilities by lowercasing and underscoring the KEY, so
+   * the gate asked for access_civicrm_backend_and_api -- held by nobody -- and
+   * reconciliation findings quietly became readable only by full WordPress
+   * administrators.
+   *
+   * Comparing against CRM_Core_Permission::basicPermissions() is what catches
+   * it, because that is the list of keys the CMS layer will actually be asked
+   * about.
+   */
+  public function testEveryPermissionWeGateOnActuallyExists(): void {
+    $known = array_keys(\CRM_Core_Permission::basicPermissions(FALSE, TRUE));
+
+    $gated = [];
+    foreach (['ReconFinding', 'BoosterPortal'] as $entity) {
+      $class = '\\Civi\\Api4\\' . $entity;
+      if (!class_exists($class) || !method_exists($class, 'permissions')) {
+        continue;
+      }
+      foreach ($class::permissions() as $action => $permissions) {
+        foreach ((array) $permissions as $permission) {
+          // Nested arrays express OR; flatten them.
+          foreach ((array) $permission as $one) {
+            if (is_string($one) && $one !== '*always allow*') {
+              $gated["{$entity}::{$action}"][] = $one;
+            }
+          }
+        }
+      }
+    }
+
+    $this->assertNotEmpty($gated, 'Found no permission gates to check -- this test would pass vacuously.');
+
+    foreach ($gated as $where => $permissions) {
+      foreach ($permissions as $permission) {
+        $this->assertContains($permission, $known,
+          "{$where} gates on '{$permission}', which is not a CiviCRM permission key. "
+          . "Check it is not a LABEL: 'access CiviCRM backend and API' is the label of the key "
+          . "'access CiviCRM'. On WordPress a non-existent key becomes a capability nobody holds, "
+          . "so the gate silently refuses everybody except full administrators.");
+      }
+    }
+  }
+
+  /**
    * Invariant 1 (design §3.3): no SearchKit display anywhere has acl_bypass.
    * Also shipped as hourly reconciliation check #3 (Task 13).
    */
