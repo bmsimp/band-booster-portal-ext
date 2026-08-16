@@ -10,7 +10,7 @@
 // session (Task 13 report has the command + output).
 //
 // No acl_bypass anywhere in this file (invariant 1, §3.3) — ReconFinding's
-// own permissions() gate ('access CiviCRM backend and API' for get(),
+// own permissions() gate ('view all contacts' for get(),
 // Civi/Api4/ReconFinding.php) is what scopes this display to the webmaster
 // tier; the display itself runs with the viewer's permissions.
 return [

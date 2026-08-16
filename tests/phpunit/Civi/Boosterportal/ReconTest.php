@@ -342,12 +342,13 @@ class ReconTest extends TestCase implements HeadlessInterface, TransactionalInte
     \civicrm_api4('ReconFinding', 'get', ['checkPermissions' => TRUE]);
   }
 
-  public function testReconFindingGetAllowedForAdmin(): void {
+  public function testReconFindingGetAllowedForBoardTierSession(): void {
     $contactId = Contact::create(FALSE)->addValue('contact_type', 'Individual')
       ->addValue('first_name', 'Webmaster')->addValue('last_name', 'Admin')->execute()->first()['id'];
     $this->createLoggedInUserFor($contactId);
+    // A board-tier session: exactly what boosterportal-entra-roles.php grants.
     \CRM_Core_Config::singleton()->userPermissionClass->permissions = [
-      'access CiviCRM', 'administer CiviCRM', 'access CiviCRM backend and API',
+      'access CiviCRM', 'view all contacts', 'edit all contacts', 'access all custom data',
     ];
 
     $result = \civicrm_api4('ReconFinding', 'get', ['checkPermissions' => TRUE]);
